@@ -1,3 +1,10 @@
+import { encode, decode } from "@msgpack/msgpack";
+
+/// The extension a shipped animation file carries, matching the Swift runtime's
+/// `InertiaCoding.fileExtension`. An animation is MessagePack on disk and on the
+/// wire alike — see `websocket-protocol.md`.
+export const inertiaFileExtension = "msgpack";
+
 export interface InertiaAnimationSchema {
     id: string;
     initialValues: InertiaAnimationValues;
@@ -92,9 +99,12 @@ export enum MessageType {
     playbackProgress = "playbackProgress"
 }
 
-export interface MessageWrapper<T = any> {
+/// One frame. `payload` is the inner message as a *separately encoded*
+/// MessagePack document, carried in a `bin` value — which is what the Swift
+/// runtime's `Data` payload is, and why nothing base64s anything any more.
+export interface MessageWrapper {
     type: MessageType;
-    payload: T;
+    payload: Uint8Array;
 }
 
 export type InertiaAnimationValues = {
@@ -284,16 +294,6 @@ export type InertiaSchemaWrapper = {
     animationId: string;
 };
 
-function base64Encode(str: string): string {
-    // Convert UTF-8 string to bytes
-    const bytes = new TextEncoder().encode(str);
-    // Convert bytes to binary string
-    let binary = '';
-    bytes.forEach((b) => binary += String.fromCharCode(b));
-    // Base64 encode
-    return btoa(binary);
-}
-
 export interface MessageActionables {
     tree: Tree;
     actionableIds: Array<ActionableIdPair>;
@@ -336,8 +336,9 @@ export type MessagePlaybackProgress = {
 }
 
 /// The editor's transport commands. Swift synthesizes `Codable` for an enum
-/// with associated values as a single-key object — `{"seek": {"_0": 1.25}}` —
-/// which is what `decodeAnimationSignal` unpacks.
+/// with associated values as a single-key map — `{"seek": {"_0": 1.25}}` —
+/// which is what `decodeAnimationSignal` unpacks. MessagePack carries that map
+/// as-is, so the shape is the same one the JSON wire had.
 export type AnimationSignal =
     | { type: "pause" }
     | { type: "resume" }
@@ -707,6 +708,11 @@ export class WebSocketClient {
             return;
         }
 
+        // Every frame is MessagePack, so they arrive as bytes. Without this a
+        // browser hands them over as a Blob, which is only readable
+        // asynchronously — an await per playback frame.
+        socket.binaryType = "arraybuffer";
+
         this.socket = socket;
 
         socket.onopen = () => {
@@ -768,21 +774,24 @@ export class WebSocketClient {
     }
 
     /// Every message on this socket is one wrapper carrying the inner message as
-    /// a *separately encoded* JSON document, base64'd — that is how Swift writes
-    /// a `Data` payload, and the editor decodes it back the same way.
+    /// a *separately encoded* MessagePack document — that is how Swift writes a
+    /// `Data` payload, and the editor decodes it back the same way.
     private send(type: MessageType, message: unknown): boolean {
         if (!this.socket || !this.isConnected) {
             console.error("WebSocket is not connected");
             return false;
         }
 
-        const messageWrapper: MessageWrapper<string> = {
+        const messageWrapper: MessageWrapper = {
             type,
-            payload: base64Encode(JSON.stringify(message))
+            payload: encode(message)
         };
 
         try {
-            this.socket.send(JSON.stringify(messageWrapper));
+            // `encode` returns a view onto a larger buffer, so hand `send` the
+            // view rather than its `buffer` — that would send the slack too.
+            const bytes = encode(messageWrapper);
+            this.socket.send(bytes.slice());
             return true;
         } catch (error) {
             console.error("❌ Error sending message:", error);
@@ -790,8 +799,18 @@ export class WebSocketClient {
         }
     }
 
+    /// The tree is flattened on the way out rather than left to the encoder.
+    /// `JSON.stringify` used to call `Tree.toJSON` for us, which is what dropped
+    /// the `parent` and `tree` back-references; MessagePack has no such hook, so
+    /// encoding a live `Tree` would walk straight into those cycles.
     public sendMessageActionables(message: MessageActionables): void {
-        if (this.send(MessageType.actionables, message)) {
+        const sent = this.send(MessageType.actionables, {
+            ...message,
+            tree: message.tree.toJSON(),
+            actionableIds: Array.from(message.actionableIds),
+        });
+
+        if (sent) {
             console.log("✅ Message sent:", MessageType.actionables, message);
         }
     }
@@ -845,23 +864,22 @@ export class WebSocketClient {
 
     private async handleMessage(rawData: any): Promise<void> {
         try {
-            let text: string;
+            let bytes: Uint8Array;
 
-            if (typeof rawData === "string") {
-                text = rawData;
+            // `binaryType` is set to "arraybuffer" on every socket this opens,
+            // but a Blob is what a socket left at its default would deliver.
+            if (rawData instanceof ArrayBuffer) {
+                bytes = new Uint8Array(rawData);
             } else if (rawData instanceof Blob) {
-                text = await rawData.text();
-            } else if (rawData instanceof ArrayBuffer) {
-                text = new TextDecoder().decode(rawData);
+                bytes = new Uint8Array(await rawData.arrayBuffer());
+            } else if (rawData instanceof Uint8Array) {
+                bytes = rawData;
             } else {
-                throw new Error("Unsupported message format");
+                throw new Error("Unsupported message format — frames are MessagePack");
             }
 
-            const messageWrapper: MessageWrapper<string> = JSON.parse(text);
-
-            // Decode Base64 payload
-            const payloadJson = atob(messageWrapper.payload);
-            const payload = JSON.parse(payloadJson);
+            const messageWrapper = decode(bytes) as MessageWrapper;
+            const payload: any = decode(messageWrapper.payload);
 
             switch (messageWrapper.type) {
                 case MessageType.actionable:
