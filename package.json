@@ -1,6 +1,7 @@
 {
   "name": "inertia-base",
-  "version": "0.1.0",
+  "version": "0.1.1",
+  "repository": "github:hpennington/inertia-base",
   "description": "",
   "main": "dist/index.min.js",
   "types": "dist/index.d.ts",
