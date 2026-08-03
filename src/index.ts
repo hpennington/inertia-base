@@ -77,15 +77,41 @@ export enum InertiaShapeType {
     triangle = "triangle"
 }
 
-/// A drawn vector as the editor records it: what it is, how big, and what colour
-/// — the size in the same multiples of the actionable its corners would have
-/// been measured in.
+/// A drawn vector as the editor records it: what it is, how big, and how it is
+/// painted — the size in the same multiples of the actionable its corners would
+/// have been measured in.
+///
+/// Painting is the two halves a vector has always had everywhere else: `fill`
+/// floods the area the outline encloses, `stroke` draws the outline itself, and
+/// either may be left out. A shape with no fill is an outline on nothing; a
+/// shape with no stroke is the flat area a described vector used to be; a shape
+/// with neither draws nothing at all, which is the one combination there is no
+/// reason to author.
 export type InertiaShapeProperties = {
     id: string;
     type: InertiaShapeType;
     width: number;
     height: number;
-    color: InertiaColor;
+
+    /// The colour flooding the outline, or absent for a shape that is only its
+    /// outline.
+    fill?: InertiaColor;
+
+    /// The colour of the outline itself, or absent for a shape that is only its
+    /// area. Draws nothing without a `strokeWidth` to draw it at.
+    stroke?: InertiaColor;
+
+    /// How thick the outline is, in the units the shape is sized in — multiples
+    /// of the actionable's own frame, the same as `width` and `height`, so a
+    /// stroke keeps its weight relative to the shape at every size that frame
+    /// takes.
+    ///
+    /// The stroke is drawn *inside* the outline: a shape occupies exactly the
+    /// box it was authored at whether or not it is stroked, so adding a stroke
+    /// never moves the shape or grows the canvas it is drawn on. A width past
+    /// half the shape's smaller side would turn the ring inside out, so it is
+    /// held there — a stroke that thick is a solid shape, and is drawn as one.
+    strokeWidth?: number;
 }
 
 /// A shape as it is authored alongside an animation: a ring of corners, each
@@ -621,39 +647,34 @@ export const ovalSegments = 48;
 /// rather than two, so each is sized by the longer side of the box it was drawn
 /// in — the shape stays square, stays round, stays a triangle whatever box it
 /// was dragged out over.
-function describedVertices(properties: InertiaShapeProperties): Array<Vertex> {
+export function describedOutline(properties: InertiaShapeProperties): Array<InertiaPoint> {
     const size = Math.max(properties.width, properties.height);
-    const corner = (x: number, y: number): Vertex => ({
-        position: { x, y },
-        color: properties.color
-    });
 
     /// The ring inscribed in a box: one corner per segment, stepping around the
-    /// ellipse. The ring is convex, so the fan the renderer draws it with covers
-    /// it exactly.
-    const ring = (width: number, height: number): Array<Vertex> => {
+    /// ellipse.
+    const ring = (width: number, height: number): Array<InertiaPoint> => {
         const radiusX = width / 2;
         const radiusY = height / 2;
-        const vertices: Array<Vertex> = [];
+        const points: Array<InertiaPoint> = [];
 
         for (let segment = 0; segment < ovalSegments; segment++) {
             const angle = 2 * Math.PI * segment / ovalSegments;
-            vertices.push(corner(radiusX * Math.cos(angle), radiusY * Math.sin(angle)));
+            points.push({ x: radiusX * Math.cos(angle), y: radiusY * Math.sin(angle) });
         }
 
-        return vertices;
+        return points;
     };
 
-    /// The two triangles of a quad, which is how a rectangle reaches the
-    /// renderer.
-    const quad = (width: number, height: number): Array<Vertex> => {
+    /// The four corners of a box, drawn about its centre.
+    const quad = (width: number, height: number): Array<InertiaPoint> => {
         const halfWidth = width / 2;
         const halfHeight = height / 2;
-        const topLeft = corner(-halfWidth, -halfHeight);
-        const topRight = corner(halfWidth, -halfHeight);
-        const bottomLeft = corner(-halfWidth, halfHeight);
-        const bottomRight = corner(halfWidth, halfHeight);
-        return [topLeft, topRight, bottomRight, topLeft, bottomLeft, bottomRight];
+        return [
+            { x: -halfWidth, y: -halfHeight },
+            { x: halfWidth, y: -halfHeight },
+            { x: halfWidth, y: halfHeight },
+            { x: -halfWidth, y: halfHeight }
+        ];
     };
 
     switch (properties.type) {
@@ -666,12 +687,13 @@ function describedVertices(properties: InertiaShapeProperties): Array<Vertex> {
         case InertiaShapeType.oval:
             return ring(properties.width, properties.height);
         case InertiaShapeType.triangle: {
+            // An isosceles triangle with mirror symmetry about the y-axis.
             const height = size * Math.sqrt(3) / 2;
             const halfBase = size / 2;
             return [
-                corner(0, height / 2),
-                corner(-halfBase, -height / 2),
-                corner(halfBase, -height / 2)
+                { x: 0, y: height / 2 },
+                { x: -halfBase, y: -height / 2 },
+                { x: halfBase, y: -height / 2 }
             ];
         }
     }
@@ -679,19 +701,31 @@ function describedVertices(properties: InertiaShapeProperties): Array<Vertex> {
 
 /// The corners this shape is drawn from, however it was authored: the ones
 /// recorded against it, or the ones its description resolves to.
+///
+/// A described vector resolves to its outline carrying the colour it is filled
+/// with — or, for a shape that is only its outline, the colour it is stroked
+/// with, so an unfilled shape still says where it is to everything that measures
+/// a shape by its corners.
 export function shapeVertices(shape: InertiaShape): Array<Vertex> {
     if (shape.vertices) {
         return shape.vertices;
     }
 
-    return shape.shape ? describedVertices(shape.shape) : [];
+    if (!shape.shape) {
+        return [];
+    }
+
+    const color = shape.shape.fill ?? shape.shape.stroke ?? { red: 0, green: 0, blue: 0, alpha: 0 };
+    return describedOutline(shape.shape).map(position => ({ position, color }));
 }
 
-/// The shape as the triangle list a GPU draws: a fan around the first corner,
-/// so three corners are a triangle and four a quad. Fewer than three enclose no
-/// area and contribute nothing.
-export function shapeTriangles(shape: InertiaShape): Array<Vertex> {
-    const vertices = shapeVertices(shape);
+/// A ring of corners as the triangle list a GPU draws: a fan around the first
+/// corner, so three corners are a triangle and four a quad. Fewer than three
+/// enclose no area and contribute nothing.
+///
+/// Every ring a shape resolves to is convex, so the fan covers it exactly from
+/// whichever corner it starts at.
+export function fan(vertices: Array<Vertex>): Array<Vertex> {
     if (vertices.length < 3) {
         return [];
     }
@@ -702,6 +736,117 @@ export function shapeTriangles(shape: InertiaShape): Array<Vertex> {
     }
 
     return triangles;
+}
+
+/// The same ring moved `distance` towards its own inside, corner by corner.
+///
+/// Each corner travels along the bisector of the two edges meeting at it, far
+/// enough that both edges end up exactly `distance` in — which is what makes the
+/// band an even thickness all the way round instead of thinning at the corners.
+/// Very sharp corners want to travel a very long way, so the distance is capped;
+/// the ring is convex and the cap only ever pulls a spike back in.
+///
+/// Which way "inside" is depends on which way the ring was wound, so that is
+/// measured rather than assumed: the sign of the area it encloses.
+function insetOutline(outline: Array<InertiaPoint>, distance: number): Array<InertiaPoint> {
+    const count = outline.length;
+
+    // Twice the signed area. Only the sign is read.
+    let area = 0;
+    for (let i = 0; i < count; i++) {
+        const corner = outline[i];
+        const next = outline[(i + 1) % count];
+        area += corner.x * next.y - next.x * corner.y;
+    }
+    const winding = area < 0 ? -1 : 1;
+
+    const unit = (point: InertiaPoint): InertiaPoint => {
+        const length = Math.hypot(point.x, point.y);
+        return length > 0 ? { x: point.x / length, y: point.y / length } : { x: 0, y: 0 };
+    };
+
+    /// The unit normal of an edge, pointing at the ring's inside.
+    const normal = (start: InertiaPoint, end: InertiaPoint): InertiaPoint =>
+        unit({ x: -(end.y - start.y) * winding, y: (end.x - start.x) * winding });
+
+    return outline.map((corner, index) => {
+        const previous = outline[(index - 1 + count) % count];
+        const next = outline[(index + 1) % count];
+
+        const incoming = normal(previous, corner);
+        const outgoing = normal(corner, next);
+        const bisector = unit({ x: incoming.x + outgoing.x, y: incoming.y + outgoing.y });
+
+        // How far along the bisector puts both edges `distance` in. Zero when
+        // the two edges double back on each other, which is a corner with no
+        // inside to move towards.
+        const projection = bisector.x * outgoing.x + bisector.y * outgoing.y;
+        if (!(projection > 0.1)) {
+            return corner;
+        }
+
+        const travel = distance / projection;
+        return { x: corner.x + bisector.x * travel, y: corner.y + bisector.y * travel };
+    });
+}
+
+/// The outline itself, as triangles: the band between the ring and the same ring
+/// inset by `strokeWidth`.
+///
+/// Inset rather than centred or outset, so a stroke stays inside the box the
+/// shape was authored at — see `InertiaShapeProperties.strokeWidth`. Each corner
+/// is mitred, so the band turns a corner in one piece rather than leaving the
+/// wedge that offsetting each edge on its own would.
+function strokeTriangles(properties: InertiaShapeProperties): Array<Vertex> {
+    const stroke = properties.stroke;
+    const width = properties.strokeWidth ?? 0;
+    if (!stroke || !(width > 0)) {
+        return [];
+    }
+
+    const outline = describedOutline(properties);
+    if (outline.length < 3) {
+        return [];
+    }
+
+    // A stroke thicker than the shape has room for would turn the inner ring
+    // inside out. Held at the point where the ring closes on itself, which is a
+    // shape drawn solid in the stroke's colour.
+    const inset = Math.min(width, Math.min(properties.width, properties.height) / 2);
+    const inner = insetOutline(outline, inset);
+
+    const triangles: Array<Vertex> = [];
+    for (let i = 0; i < outline.length; i++) {
+        const next = (i + 1) % outline.length;
+        const corner = (position: InertiaPoint): Vertex => ({ position, color: stroke });
+
+        triangles.push(
+            corner(outline[i]), corner(outline[next]), corner(inner[next]),
+            corner(outline[i]), corner(inner[next]), corner(inner[i])
+        );
+    }
+
+    return triangles;
+}
+
+/// Everything this shape draws, as the one triangle list a GPU takes: the fill
+/// first, then the stroke over it.
+///
+/// The order is the order they are drawn in — the renderer blends source-over
+/// down the list and keeps no depth — which is what puts the outline on top of
+/// the area it encloses rather than under it. A shape authored corner by corner
+/// is all fill, since a stroke is something a *described* vector carries.
+export function shapeTriangles(shape: InertiaShape): Array<Vertex> {
+    if (shape.vertices || !shape.shape) {
+        return fan(shapeVertices(shape));
+    }
+
+    const properties = shape.shape;
+    const fill = properties.fill;
+    const outline = describedOutline(properties);
+    const filled = fill ? fan(outline.map(position => ({ position, color: fill }))) : [];
+
+    return filled.concat(strokeTriangles(properties));
 }
 
 /// The smallest box holding every corner of these shapes, in the units they are
@@ -745,26 +890,22 @@ export function shapeBounds(shapes: Array<InertiaShape>): InertiaRect | null {
 /// is the canvas's top-left corner and (1, 1) its bottom-right, which is the
 /// space the renderer draws in.
 ///
-/// The corners are resolved on the way through: whatever the shape was authored
-/// as, what comes out is the ring that lands in `bounds`. Its animation rides
-/// along, since normalizing is about where the shape is drawn and not about what
-/// it then does.
-export function normalizeShape(shape: InertiaShape, bounds: InertiaRect): InertiaShape {
+/// Triangles rather than corners, because by this point the shape *is* its
+/// drawing: the fill and the stroke have been resolved into one list, and a ring
+/// of corners could no longer say which of the two it was.
+export function normalizedShapeTriangles(shape: InertiaShape, bounds: InertiaRect): Array<Vertex> {
+    const triangles = shapeTriangles(shape);
     if (!(bounds.width > 0) || !(bounds.height > 0)) {
-        return shape;
+        return triangles;
     }
 
-    return {
-        id: shape.id,
-        vertices: shapeVertices(shape).map(vertex => ({
-            position: {
-                x: (vertex.position.x - bounds.x) / bounds.width,
-                y: (vertex.position.y - bounds.y) / bounds.height
-            },
-            color: vertex.color
-        })),
-        animation: shape.animation
-    };
+    return triangles.map(vertex => ({
+        position: {
+            x: (vertex.position.x - bounds.x) / bounds.width,
+            y: (vertex.position.y - bounds.y) / bounds.height
+        },
+        color: vertex.color
+    }));
 }
 
 /// How long this schema's own track runs, before any padding.
