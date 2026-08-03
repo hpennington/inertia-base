@@ -103,6 +103,14 @@ export type InertiaShapeProperties = {
 /// backdrop: the corners say what is drawn, the track says how it moves, and
 /// the actionable it was authored against carries both.
 export type InertiaShape = {
+    /// What this shape is, to anything that has to point at it: the editor's
+    /// hierarchy panel, the selection sent back to the runtime, and the edit
+    /// that selection authors.
+    ///
+    /// A shape used to be addressable only by where it sat — whose schema held
+    /// it, and how far down the list — which is a name that changes when the
+    /// shape either side of it is deleted. This does not.
+    id: string;
     vertices?: Array<Vertex>;
     shape?: InertiaShapeProperties;
     animation?: InertiaAnimationSchema;
@@ -747,6 +755,7 @@ export function normalizeShape(shape: InertiaShape, bounds: InertiaRect): Inerti
     }
 
     return {
+        id: shape.id,
         vertices: shapeVertices(shape).map(vertex => ({
             position: {
                 x: (vertex.position.x - bounds.x) / bounds.width,
