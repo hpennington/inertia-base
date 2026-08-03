@@ -96,7 +96,22 @@ export enum MessageType {
     translationEnded = "translationEnded",
     selectedNodeProperties = "selectedNodeProperties",
     signal = "signal",
-    playbackProgress = "playbackProgress"
+    playbackProgress = "playbackProgress",
+    tool = "tool",
+    edit = "edit"
+}
+
+/// What a drag in the runtime's viewport edits.
+///
+/// Picked in the editor's toolbar and sent here, because the gesture happens in
+/// the app being authored rather than in the editor. One case per property of
+/// `InertiaAnimationValues` — the same five the timeline breaks a track into.
+export enum InertiaTool {
+    translate = "translate",
+    rotate = "rotate",
+    rotateCenter = "rotateCenter",
+    opacity = "opacity",
+    scale = "scale"
 }
 
 /// One frame. `payload` is the inner message as a *separately encoded*
@@ -142,6 +157,11 @@ export class InertiaDataModel {
     public states: Map<string, InertiaAnimationState>;
     public actionableIdToAnimationIdMap: Map<string, string>;
     public isActionable: boolean = false
+    /// Which property a gesture on a selected node edits, as picked in the
+    /// editor's toolbar. `translate` until the editor says otherwise, which is
+    /// also what a runtime that reconnects mid-session falls back to until the
+    /// editor resends.
+    public activeTool: InertiaTool = InertiaTool.translate
 
     constructor(containerId: string, inertiaSchemas: Map<string, InertiaAnimationSchema>, tree: Tree, actionableIdPairs: Set<ActionableIdPair>) {
         this.containerId = containerId;
@@ -318,6 +338,110 @@ export type MessageSelectedNodeProperties = {
     positionY: number;
     sizeX: number;
     sizeY: number;
+    /// What the selection would be authored at if the gesture ended now. Absent
+    /// from a runtime that only knows how to move a node, which is why the
+    /// editor decodes it as optional.
+    values?: InertiaAnimationValues;
+}
+
+/// Editor → runtime: which tool a gesture on a selected node applies.
+export type MessageTool = {
+    tool: InertiaTool;
+}
+
+/// Runtime → editor: where a gesture left the selection.
+///
+/// The whole transform rather than the one property the tool changed, because
+/// that is what the editor records — a keyframe holds all five values, and the
+/// four the tool did not touch still have to be the ones the node is sitting at.
+///
+/// Generalizes `MessageTranslation`, which this runtime no longer sends.
+export type MessageEdit = {
+    tool: InertiaTool;
+    values: InertiaAnimationValues;
+    actionableIds: Array<ActionableIdPair>;
+}
+
+/// What the editor's gestures have added on top of the values an actionable's
+/// schema puts it at.
+///
+/// A delta rather than an absolute transform: the schema is what an actionable
+/// *is* at, and the editor folds a gesture into it and pushes it back, at which
+/// point this returns to `noToolEdit`. Holding it separately is what lets the
+/// two be told apart, so the same move is never counted twice.
+export type InertiaToolEdit = {
+    /// Pixels in the container's coordinate space, which is what the drag is
+    /// measured in. Normalized against the container only on the way out.
+    translate: [number, number];
+    /// Degrees, about the node's top-left corner.
+    rotate: number;
+    /// Degrees, about the node's center.
+    rotateCenter: number;
+    /// Added to the schema's scale rather than multiplying it, so scale
+    /// accumulates across gestures exactly like every other property here.
+    scale: number;
+    opacity: number;
+}
+
+export const noToolEdit: InertiaToolEdit = {
+    translate: [0, 0],
+    rotate: 0,
+    rotateCenter: 0,
+    scale: 0,
+    opacity: 0,
+};
+
+/// A node scaled to nothing has no box left to grab, and a negative scale
+/// mirrors it. The smallest scale a handle will author.
+export const minimumToolScale = 0.01;
+
+export function isNoToolEdit(edit: InertiaToolEdit | null | undefined): boolean {
+    if (!edit) return true;
+    return edit.translate[0] === 0
+        && edit.translate[1] === 0
+        && edit.rotate === 0
+        && edit.rotateCenter === 0
+        && edit.scale === 0
+        && edit.opacity === 0;
+}
+
+export function addToolEdits(lhs: InertiaToolEdit, rhs: InertiaToolEdit): InertiaToolEdit {
+    return {
+        translate: [lhs.translate[0] + rhs.translate[0], lhs.translate[1] + rhs.translate[1]],
+        rotate: lhs.rotate + rhs.rotate,
+        rotateCenter: lhs.rotateCenter + rhs.rotateCenter,
+        scale: lhs.scale + rhs.scale,
+        opacity: lhs.opacity + rhs.opacity,
+    };
+}
+
+/// `values` with an in-progress edit folded into it — what the node is drawn at
+/// while a handle is being dragged, and what the editor is told once it is let
+/// go.
+///
+/// Scale and opacity are clamped rather than left to run: a scale through zero
+/// flips the node inside out and a negative opacity is not a thing a keyframe
+/// can hold.
+export function applyToolEdit(
+    values: InertiaAnimationValues,
+    edit: InertiaToolEdit | null | undefined,
+    canvasSize: InertiaCanvasSize
+): InertiaAnimationValues {
+    if (isNoToolEdit(edit) || !edit) return values;
+
+    const width = canvasSize.width > 0 ? canvasSize.width : 1;
+    const height = canvasSize.height > 0 ? canvasSize.height : 1;
+
+    return {
+        scale: Math.max(minimumToolScale, values.scale + edit.scale),
+        translate: [
+            values.translate[0] + edit.translate[0] / width,
+            values.translate[1] + edit.translate[1] / height,
+        ],
+        rotate: values.rotate + edit.rotate,
+        rotateCenter: values.rotateCenter + edit.rotateCenter,
+        opacity: Math.min(1, Math.max(0, values.opacity + edit.opacity)),
+    };
 }
 
 /// Where the run currently on screen has got to, reported while animating so
@@ -392,7 +516,10 @@ export const InertiaPlayback = {
     }
 } as const;
 
-const identityValues: InertiaAnimationValues = {
+/// Draws a thing exactly where it was laid out: what something with no
+/// animation of its own is shown at, and the baseline an editor gesture on an
+/// actionable that has no schema yet is measured from.
+export const identityValues: InertiaAnimationValues = {
     scale: 1,
     translate: [0, 0],
     rotate: 0,
@@ -650,6 +777,7 @@ export class WebSocketClient {
     public messageReceivedIsActionable?: (isActionable: boolean) => void;
     public messageReceivedTranslationEnded?: (actionableIds: Set<ActionableIdPair>, translationX: number, translationY: number) => void;
     public messageReceivedSignal?: (signal: AnimationSignal, sequence: number) => void;
+    public messageReceivedTool?: (tool: InertiaTool) => void;
 
     /// How long to wait before dialing the editor again. The editor is not
     /// usually up when the page loads, and it can be restarted under a running
@@ -861,6 +989,20 @@ export class WebSocketClient {
         }
     }
 
+    /// One message whatever the tool, carrying the whole transform: a keyframe
+    /// holds all five values, so the four a gesture did not touch have to travel
+    /// with the one it did.
+    public sendMessageEdit(message: MessageEdit): void {
+        const sent = this.send(MessageType.edit, {
+            ...message,
+            actionableIds: Array.from(message.actionableIds),
+        });
+
+        if (sent) {
+            console.log("✅ Message sent:", MessageType.edit, message);
+        }
+    }
+
 
     private async handleMessage(rawData: any): Promise<void> {
         try {
@@ -905,6 +1047,12 @@ export class WebSocketClient {
                     console.log("[INERTIA_LOG]: Received translationEnded:", translationMSG);
                     this.messageReceivedTranslationEnded?.(new Set(translationMSG.actionableIds), translationMSG.translationX, translationMSG.translationY)
                     break
+
+                case MessageType.tool:
+                    const toolMessage: MessageTool = payload;
+                    console.log("[INERTIA_LOG]: Received tool:", toolMessage);
+                    this.messageReceivedTool?.(toolMessage.tool);
+                    break;
 
                 case MessageType.signal:
                     const signalMessage: { signal: unknown; sequence: number } = payload;
