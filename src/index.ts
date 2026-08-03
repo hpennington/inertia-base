@@ -14,6 +14,38 @@ export interface InertiaAnimationSchema {
     /// animation recorded before shapes existed — or one that simply wants none
     /// — still loads.
     shapes?: Array<InertiaShape>;
+    /// How long one loop of the timeline this was authored on lasts.
+    ///
+    /// A property of the animation rather than of the editor that recorded it:
+    /// a track is padded out to the loop, so an animation played back at a
+    /// length other than the one it was drawn against holds — or truncates —
+    /// where its author did not mean it to. Every schema in a project carries
+    /// the same value, which is what the editor's one timeline slider writes.
+    ///
+    /// Optional to author, so an animation recorded before the loop was part of
+    /// the schema — or one happy with the default — still loads.
+    loopDuration?: number;
+}
+
+/// The loop `schemas` were authored against, or null if none of them say.
+///
+/// The longest, where a hand-edited file disagrees with itself: the loop is
+/// what every track is padded out to, and the shorter answer would cut the
+/// track that asked for more off at the knees.
+export function authoredLoopDuration(
+    schemas: Iterable<InertiaAnimationSchema>
+): number | null {
+    let authored: number | null = null;
+
+    for (const schema of schemas) {
+        if (schema.loopDuration === undefined) {
+            continue;
+        }
+        const clamped = InertiaPlayback.clampLoopDuration(schema.loopDuration);
+        authored = authored === null ? clamped : Math.max(authored, clamped);
+    }
+
+    return authored;
 }
 
 export type InertiaPoint = {
