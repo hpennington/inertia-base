@@ -39,17 +39,21 @@ export type Vertex = {
 /// corner by corner. A bare string on the wire, like every other enum here.
 export enum InertiaShapeType {
     rectangle = "rectangle",
+    square = "square",
+    circle = "circle",
     oval = "oval",
     triangle = "triangle"
 }
 
-/// A drawn vector as the editor records it: what it is and how big, in the same
-/// multiples of the actionable its corners would have been measured in.
+/// A drawn vector as the editor records it: what it is, how big, and what colour
+/// — the size in the same multiples of the actionable its corners would have
+/// been measured in.
 export type InertiaShapeProperties = {
     id: string;
     type: InertiaShapeType;
     width: number;
     height: number;
+    color: InertiaColor;
 }
 
 /// A shape as it is authored alongside an animation: a ring of corners, each
@@ -558,10 +562,11 @@ export function playableKeyframes(schema: InertiaAnimationSchema): Array<Inertia
     });
 }
 
-/// The colour a described vector is drawn in until the editor records one of
-/// its own. Shared with the Swift and Kotlin runtimes, which draw the same
-/// placeholder.
-const describedShapeColor: InertiaColor = { red: 1, green: 0, blue: 0, alpha: 1 };
+/// How many corners a round vector's ring is cut into. An oval has no corners of
+/// its own, so it is drawn as the many-sided polygon that reads as one at the
+/// sizes a shape is authored at — and the same count as the Swift and Kotlin
+/// runtimes use, so an oval authored once is the same drawing on all three.
+export const ovalSegments = 48;
 
 /// The ring of corners a described vector is drawn from, in the actionable's own
 /// units and centred on its top-left corner — the origin the description is
@@ -571,31 +576,65 @@ const describedShapeColor: InertiaColor = { red: 1, green: 0, blue: 0, alpha: 1 
 /// vector is the same drawing on all three. A rectangle comes out as the two
 /// triangles of a quad rather than four corners; the fan in `shapeTriangles`
 /// re-covers the same area from them.
+///
+/// A square, a circle and a triangle are the descriptions with one measurement
+/// rather than two, so each is sized by the longer side of the box it was drawn
+/// in — the shape stays square, stays round, stays a triangle whatever box it
+/// was dragged out over.
 function describedVertices(properties: InertiaShapeProperties): Array<Vertex> {
     const size = Math.max(properties.width, properties.height);
     const corner = (x: number, y: number): Vertex => ({
         position: { x, y },
-        color: describedShapeColor
+        color: properties.color
     });
 
-    if (properties.type === InertiaShapeType.triangle) {
-        const height = size * Math.sqrt(3) / 2;
-        const halfBase = size / 2;
-        return [
-            corner(0, height / 2),
-            corner(-halfBase, -height / 2),
-            corner(halfBase, -height / 2)
-        ];
-    }
+    /// The ring inscribed in a box: one corner per segment, stepping around the
+    /// ellipse. The ring is convex, so the fan the renderer draws it with covers
+    /// it exactly.
+    const ring = (width: number, height: number): Array<Vertex> => {
+        const radiusX = width / 2;
+        const radiusY = height / 2;
+        const vertices: Array<Vertex> = [];
 
-    // An oval has no drawing of its own yet and is squared off, the way the
-    // other runtimes leave it.
-    const half = size / 2;
-    const topLeft = corner(-half, -half);
-    const topRight = corner(half, -half);
-    const bottomLeft = corner(-half, half);
-    const bottomRight = corner(half, half);
-    return [topLeft, topRight, bottomRight, topLeft, bottomLeft, bottomRight];
+        for (let segment = 0; segment < ovalSegments; segment++) {
+            const angle = 2 * Math.PI * segment / ovalSegments;
+            vertices.push(corner(radiusX * Math.cos(angle), radiusY * Math.sin(angle)));
+        }
+
+        return vertices;
+    };
+
+    /// The two triangles of a quad, which is how a rectangle reaches the
+    /// renderer.
+    const quad = (width: number, height: number): Array<Vertex> => {
+        const halfWidth = width / 2;
+        const halfHeight = height / 2;
+        const topLeft = corner(-halfWidth, -halfHeight);
+        const topRight = corner(halfWidth, -halfHeight);
+        const bottomLeft = corner(-halfWidth, halfHeight);
+        const bottomRight = corner(halfWidth, halfHeight);
+        return [topLeft, topRight, bottomRight, topLeft, bottomLeft, bottomRight];
+    };
+
+    switch (properties.type) {
+        case InertiaShapeType.rectangle:
+            return quad(properties.width, properties.height);
+        case InertiaShapeType.square:
+            return quad(size, size);
+        case InertiaShapeType.circle:
+            return ring(size, size);
+        case InertiaShapeType.oval:
+            return ring(properties.width, properties.height);
+        case InertiaShapeType.triangle: {
+            const height = size * Math.sqrt(3) / 2;
+            const halfBase = size / 2;
+            return [
+                corner(0, height / 2),
+                corner(-halfBase, -height / 2),
+                corner(halfBase, -height / 2)
+            ];
+        }
+    }
 }
 
 /// The corners this shape is drawn from, however it was authored: the ones
