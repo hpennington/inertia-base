@@ -3,7 +3,7 @@ import { encode, decode } from "@msgpack/msgpack";
 /// The extension a shipped animation file carries, matching the Swift runtime's
 /// `InertiaCoding.fileExtension`. An animation is MessagePack on disk and on the
 /// wire alike — see `websocket-protocol.md`.
-export const inertiaFileExtension = "msgpack";
+export const inertiaFileExtension = "inertia";
 
 export interface InertiaAnimationSchema {
     id: string;
