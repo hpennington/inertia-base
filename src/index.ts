@@ -140,6 +140,14 @@ export type InertiaShape = {
     vertices?: Array<Vertex>;
     shape?: InertiaShapeProperties;
     animation?: InertiaAnimationSchema;
+    /// The shapes drawn inside this one, in the units of *its* box — 1 is this
+    /// shape's whole width, the way 1 is the view's whole width one level up.
+    ///
+    /// A child is part of its parent's drawing rather than a drawing of its own:
+    /// it is drawn on the parent's canvas, and every transform that moves the
+    /// parent moves it too. Absent from a project authored before nesting, which
+    /// reads unchanged.
+    shapes?: Array<InertiaShape>;
 }
 
 export type InertiaRect = {
@@ -858,6 +866,21 @@ function strokeTriangles(properties: InertiaShapeProperties): Array<Vertex> {
 /// the area it encloses rather than under it. A shape authored corner by corner
 /// is all fill, since a stroke is something a *described* vector carries.
 export function shapeTriangles(shape: InertiaShape): Array<Vertex> {
+    const own = ownTriangles(shape);
+    const children = shape.shapes ?? [];
+    if (children.length === 0) {
+        return own;
+    }
+
+    // A child is measured in this shape's box and centred where this shape is
+    // centred, so scaling by that box is the whole of the transform: the origin
+    // the two share needs no offset.
+    const unit = childUnit(shape);
+    return own.concat(children.flatMap(child => scaleVertices(shapeTriangles(child), unit)));
+}
+
+/// What this shape draws itself, before anything nested inside it.
+function ownTriangles(shape: InertiaShape): Array<Vertex> {
     if (shape.vertices || !shape.shape) {
         return fan(shapeVertices(shape));
     }
@@ -868,6 +891,58 @@ export function shapeTriangles(shape: InertiaShape): Array<Vertex> {
     const filled = fill ? fan(outline.map(position => ({ position, color: fill }))) : [];
 
     return filled.concat(strokeTriangles(properties));
+}
+
+/// The box a child's coordinates are multiples of: this shape's own size, in
+/// whatever units this shape is itself measured in.
+///
+/// A described vector says its size outright. One authored corner by corner does
+/// not, so it is measured — the box its own corners occupy, which is the same
+/// thing the description would have named.
+function childUnit(shape: InertiaShape): { width: number; height: number } {
+    if (shape.shape && !shape.vertices) {
+        return { width: shape.shape.width, height: shape.shape.height };
+    }
+
+    const positions = shapeVertices(shape).map(vertex => vertex.position);
+    const first = positions[0];
+    if (!first) {
+        return { width: 0, height: 0 };
+    }
+
+    let minX = first.x, maxX = first.x, minY = first.y, maxY = first.y;
+    positions.forEach(position => {
+        minX = Math.min(minX, position.x);
+        maxX = Math.max(maxX, position.x);
+        minY = Math.min(minY, position.y);
+        maxY = Math.max(maxY, position.y);
+    });
+
+    return { width: maxX - minX, height: maxY - minY };
+}
+
+function scaleVertices(vertices: Array<Vertex>, unit: { width: number; height: number }): Array<Vertex> {
+    return vertices.map(vertex => ({
+        position: { x: vertex.position.x * unit.width, y: vertex.position.y * unit.height },
+        color: vertex.color
+    }));
+}
+
+/// Every corner this shape's drawing reaches, its children's included, in the
+/// units this shape is measured in.
+///
+/// What the canvas is fitted to — see `shapeBounds`. A ring of corners alone
+/// would leave a child hanging over the edge of the canvas its parent sized, and
+/// cut it there.
+export function enclosingShapeVertices(shape: InertiaShape): Array<Vertex> {
+    const children = shape.shapes ?? [];
+    if (children.length === 0) {
+        return shapeVertices(shape);
+    }
+
+    const unit = childUnit(shape);
+    return shapeVertices(shape)
+        .concat(children.flatMap(child => scaleVertices(enclosingShapeVertices(child), unit)));
 }
 
 /// The smallest box holding every corner of these shapes, in the units they are
@@ -885,7 +960,7 @@ export function shapeTriangles(shape: InertiaShape): Array<Vertex> {
 /// Null when the shapes enclose no area, which is also when there is nothing to
 /// draw.
 export function shapeBounds(shapes: Array<InertiaShape>): InertiaRect | null {
-    const positions = shapes.flatMap(shape => shapeVertices(shape).map(vertex => vertex.position));
+    const positions = shapes.flatMap(shape => enclosingShapeVertices(shape).map(vertex => vertex.position));
     const first = positions[0];
     if (!first) {
         return null;
