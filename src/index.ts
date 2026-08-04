@@ -102,9 +102,9 @@ export type InertiaShapeProperties = {
     stroke?: InertiaColor;
 
     /// How thick the outline is, in the units the shape is sized in — multiples
-    /// of the actionable's own frame, the same as `width` and `height`, so a
+    /// of the actionable's shorter side, the same as `width` and `height`, so a
     /// stroke keeps its weight relative to the shape at every size that frame
-    /// takes.
+    /// takes, and is the same weight across as it is down.
     ///
     /// The stroke is drawn *inside* the outline: a shape occupies exactly the
     /// box it was authored at whether or not it is stroked, so adding a stroke
@@ -115,11 +115,16 @@ export type InertiaShapeProperties = {
 }
 
 /// A shape as it is authored alongside an animation: a ring of corners, each
-/// carrying its own colour, measured against the actionable it belongs to —
-/// (0, 0) that view's top-left, (1, 1) its bottom-right.
+/// carrying its own colour, measured against the actionable it belongs to — the
+/// origin its outline is drawn about, and 1 that view's shorter side.
 ///
-/// Nothing holds a shape to that box, though. Coordinates outside 0...1 reach
-/// past the actionable and go on being drawn, because the canvas is fitted to
+/// One side rather than each of them, so a shape is drawn in a square space and
+/// keeps the proportions it was described with: a circle of size 1 is round on a
+/// view of any shape, and only a rectangle or an oval — the two descriptions
+/// that say both of their measurements — is drawn wider than it is tall.
+///
+/// Nothing holds a shape to that box, though. Coordinates past that side reach
+/// beyond the actionable and go on being drawn, because the canvas is fitted to
 /// the shapes rather than to the view: a shape three times the size of the card
 /// it backs is authored simply by saying 3.
 ///
@@ -169,7 +174,7 @@ export type InertiaShape = {
     /// this was drawn.
     transforms?: InertiaAnimationValues;
     /// The shapes drawn inside this one, in the units of *its* box — 1 is this
-    /// shape's whole width, the way 1 is the view's whole width one level up.
+    /// shape's shorter side, the way 1 is the view's shorter side one level up.
     ///
     /// A child is part of its parent's drawing rather than a drawing of its own:
     /// it is drawn on the parent's canvas, and every transform that moves the
@@ -454,7 +459,7 @@ export type MessageSelectedNodeProperties = {
 /// Runtime → editor: the box an actionable was laid out in, in CSS pixels.
 ///
 /// A shape is authored in multiples of the element it is drawn behind — 1 is
-/// that element's whole width — so the drawing alone never says how big it is.
+/// that element's shorter side — so the drawing alone never says how big it is.
 /// Only the app knows: layout is what decides it, and it decides it again at
 /// every size the app is run at. This is that measurement, sent as it is taken,
 /// so the editor can draw a shape at the size it is really drawn at without a
@@ -977,21 +982,28 @@ function ownTriangles(shape: InertiaShape): Array<Vertex> {
     return filled.concat(strokeTriangles(properties));
 }
 
-/// The box a child's coordinates are multiples of: this shape's own size, in
-/// whatever units this shape is itself measured in.
+/// The length a child's coordinates are multiples of: the shorter side of this
+/// shape's own box, in whatever units this shape is itself measured in.
 ///
 /// A described vector says its size outright. One authored corner by corner does
 /// not, so it is measured — the box its own corners occupy, which is the same
 /// thing the description would have named.
-function childUnit(shape: InertiaShape): { width: number; height: number } {
+///
+/// One length rather than two, for the reason the actionable's own unit is one
+/// length — see `shapeUnit`. Scaling a child by this box's width across and its
+/// height down would stretch it in whatever direction the parent happens to be
+/// longer in, so a circle nested in a wide rectangle came out an oval; measured
+/// against the shorter side it is the circle it was described as, wherever it is
+/// nested.
+function childUnit(shape: InertiaShape): number {
     if (shape.shape && !shape.vertices) {
-        return { width: shape.shape.width, height: shape.shape.height };
+        return Math.min(shape.shape.width, shape.shape.height);
     }
 
     const positions = shapeVertices(shape).map(vertex => vertex.position);
     const first = positions[0];
     if (!first) {
-        return { width: 0, height: 0 };
+        return 0;
     }
 
     let minX = first.x, maxX = first.x, minY = first.y, maxY = first.y;
@@ -1002,12 +1014,12 @@ function childUnit(shape: InertiaShape): { width: number; height: number } {
         maxY = Math.max(maxY, position.y);
     });
 
-    return { width: maxX - minX, height: maxY - minY };
+    return Math.min(maxX - minX, maxY - minY);
 }
 
-function scaleVertices(vertices: Array<Vertex>, unit: { width: number; height: number }): Array<Vertex> {
+function scaleVertices(vertices: Array<Vertex>, unit: number): Array<Vertex> {
     return vertices.map(vertex => ({
-        position: { x: vertex.position.x * unit.width, y: vertex.position.y * unit.height },
+        position: { x: vertex.position.x * unit, y: vertex.position.y * unit },
         color: vertex.color
     }));
 }
@@ -1036,8 +1048,8 @@ export function enclosingShapeVertices(shape: InertiaShape): Array<Vertex> {
 }
 
 /// The smallest box holding every corner of these shapes, in the units they are
-/// authored in — multiples of the actionable's own frame, so `(0, 0, 1, 1)` is
-/// exactly the actionable and `(0, 0, 3, 3)` three times it.
+/// authored in — multiples of the actionable's shorter side, so a box 1 wide is
+/// as wide as that side and one 3 wide three times it.
 ///
 /// This is what the canvas is sized and placed by. Sizing it to the shapes
 /// rather than to the container is what keeps a shape whole: a canvas is a
