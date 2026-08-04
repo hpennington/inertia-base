@@ -168,7 +168,8 @@ export enum MessageType {
     signal = "signal",
     playbackProgress = "playbackProgress",
     tool = "tool",
-    edit = "edit"
+    edit = "edit",
+    nodeMeasured = "nodeMeasured"
 }
 
 /// What a drag in the runtime's viewport edits.
@@ -412,6 +413,26 @@ export type MessageSelectedNodeProperties = {
     /// from a runtime that only knows how to move a node, which is why the
     /// editor decodes it as optional.
     values?: InertiaAnimationValues;
+}
+
+/// Runtime → editor: the box an actionable was laid out in, in CSS pixels.
+///
+/// A shape is authored in multiples of the element it is drawn behind — 1 is
+/// that element's whole width — so the drawing alone never says how big it is.
+/// Only the app knows: layout is what decides it, and it decides it again at
+/// every size the app is run at. This is that measurement, sent as it is taken,
+/// so the editor can draw a shape at the size it is really drawn at without a
+/// view of the app to measure it in.
+///
+/// Carries the whole pair, not just the size: the id says which shapes it
+/// measures, and the prefix is the schema they are authored on — which is what
+/// the editor keys a shape by, since every instance of an actionable draws the
+/// same ones.
+export type MessageNodeMeasured = {
+    hierarchyIdPrefix: string;
+    hierarchyId: string;
+    sizeX: number;
+    sizeY: number;
 }
 
 /// Editor → runtime: which tool a gesture on a selected node applies.
@@ -1008,6 +1029,14 @@ export class WebSocketClient {
 
     private uri: string | null = null;
     private onConnect: (() => void) | null = null;
+    /// Everything that wants to know the moment an editor attaches, rather than
+    /// only at the one place that dials it.
+    ///
+    /// `onConnect` belongs to whoever called `connect` — the container — and is
+    /// replaced by the next caller. A node reporting its own measurement cannot
+    /// take that slot from it, and cannot wait for a layout that already
+    /// happened, so it listens here instead.
+    private connectedListeners = new Set<() => void>();
     private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     private isReconnecting = false;
 
@@ -1018,6 +1047,16 @@ export class WebSocketClient {
             WebSocketClient.instance = new WebSocketClient();
         }
         return WebSocketClient.instance;
+    }
+
+    /// Calls `listener` every time the socket comes up, and hands back the way
+    /// to stop listening — which a caller mounted and unmounted with a node has
+    /// to have.
+    public addConnectedListener(listener: () => void): () => void {
+        this.connectedListeners.add(listener);
+        return () => {
+            this.connectedListeners.delete(listener);
+        };
     }
 
     public connect(uri: string, onConnect: () => void): void {
@@ -1069,6 +1108,9 @@ export class WebSocketClient {
             this.isReconnecting = false;
             console.log("WebSocket connected");
             this.onConnect?.();
+            for (const listener of this.connectedListeners) {
+                listener();
+            }
         };
 
         socket.onmessage = (event: MessageEvent) => {
@@ -1170,6 +1212,10 @@ export class WebSocketClient {
 
     public sendMessageSelectedNodeProperties(message: MessageSelectedNodeProperties): void {
         this.send(MessageType.selectedNodeProperties, message);
+    }
+
+    public sendMessageNodeMeasured(message: MessageNodeMeasured): void {
+        this.send(MessageType.nodeMeasured, message);
     }
 
     /// The playhead moves every frame, and a stall anywhere downstream would let
