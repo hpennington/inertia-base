@@ -645,6 +645,22 @@ export const InertiaPlayback = {
         }
         const { lowerBound, upperBound } = InertiaPlayback.loopDurationRange;
         return Math.min(Math.max(seconds, lowerBound), upperBound);
+    },
+
+    /// One turn of the timeline for a set of schemas: the loop, or the longest
+    /// track in them where something was recorded past it.
+    ///
+    /// The runtime works this out for the app it is animating; a canvas view
+    /// works it out for the schemas it draws on its own. One answer for both, so
+    /// a track padded in here and the same track padded over there are the same
+    /// length and the two playheads mean the same thing.
+    duration(loop: number, schemas: Iterable<InertiaAnimationSchema>): number {
+        let longestTrack = 0;
+        for (const schema of schemas) {
+            longestTrack = Math.max(longestTrack, trackDuration(schema));
+        }
+
+        return Math.max(loop, longestTrack);
     }
 } as const;
 
@@ -1166,7 +1182,29 @@ export function valuesAtTime(
 ): InertiaAnimationValues {
     // A run that plays once is as long as its own track — padding it to the loop
     // would only hold it at the end, which is what the loop is for.
-    const track = isRepeating ? keyframesFilling(schema, loopDuration) : playableKeyframes(schema);
+    return valuesAt(schema, time, isRepeating ? loopDuration : null);
+}
+
+/// Where this animation has got to at `time`, seconds into the loop.
+///
+/// The one read behind playing, pausing and scrubbing alike — and behind every
+/// place a schema is drawn: the runtime's own actionables and the shapes they
+/// carry, and a canvas view, which draws the same schemas with none of the app
+/// around them. Sampling in one place is what keeps the canvas showing the
+/// frame the app is showing.
+///
+/// `filling` is the length the track is padded out to, so actionables of
+/// different lengths come round together. Null for a run that stops when its own
+/// keyframes do, which is what a non-repeating animation is.
+///
+/// Sanitized, so a NaN out of a hand-edited file can't reach an element's style
+/// and blank it out.
+export function valuesAt(
+    schema: InertiaAnimationSchema,
+    time: number,
+    filling: number | null
+): InertiaAnimationValues {
+    const track = filling === null ? playableKeyframes(schema) : keyframesFilling(schema, filling);
     let previous = sanitizeValues(schema.initialValues);
 
     if (track.length === 0) {
