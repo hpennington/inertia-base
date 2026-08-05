@@ -199,6 +199,25 @@ export type InertiaShape = {
     /// its own. Absent is a shape that shares, which is what every shape
     /// authored before this asked for one did.
     ownCanvas?: boolean;
+    /// Whether this shape is drawn while the animation it belongs to is waiting
+    /// to play, or only once it is playing.
+    ///
+    /// A shape has always been backdrop: drawn from the moment the element it
+    /// backs is on screen, whether or not anything has been triggered. That is
+    /// what a halo behind a card wants, and exactly what a shape that is *part*
+    /// of the animation — the puff a button gives off when it is pressed — does
+    /// not: it sat there in full view for however long the app waited to trigger
+    /// the track, and the only way to keep it off screen until then was to
+    /// author an opacity of zero into the first keyframe of a track of its own.
+    ///
+    /// False is that said outright: nothing is drawn until the run is on screen,
+    /// and the shape appears with it. Absent is the backdrop every shape
+    /// authored before this was.
+    ///
+    /// Read on the shapes an actionable holds directly. A nested shape is part
+    /// of its parent's drawing — drawn into the parent's vertex buffer — so it
+    /// appears and disappears with whatever it is drawn inside of.
+    showsBeforeAnimation?: boolean;
     /// Where this shape sits inside whatever holds it: the actionable whose
     /// canvas it is drawn on, or — for a nested shape — the shape it is drawn
     /// inside of.
