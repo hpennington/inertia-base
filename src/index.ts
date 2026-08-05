@@ -77,6 +77,25 @@ export enum InertiaShapeType {
     triangle = "triangle"
 }
 
+/// Which side of the actionable's own content a shape is drawn on.
+///
+/// A shape has always been a backdrop: drawn behind whatever the element
+/// renders, so the label over it stays readable and the drawing stays a drawing.
+/// `top` is that same shape put in front instead — a badge, a highlight, a
+/// scribble over the view rather than under it — and it is the same canvas
+/// either way, painted over the content instead of under it.
+///
+/// This sits above `InertiaShape.zIndex` rather than beside it: a z-index orders
+/// the shapes drawn on one side of the content, and nothing drawn behind an
+/// element can be lifted in front of it by counting higher.
+export enum InertiaShapePosition {
+    /// Behind the actionable's content — where every shape authored before this
+    /// existed was drawn, which is why it is what an absent `position` means.
+    bottom = "bottom",
+    /// Over the actionable's content.
+    top = "top"
+}
+
 /// A drawn vector as the editor records it: what it is, how big, and how it is
 /// painted — the size in the same multiples of the actionable its corners would
 /// have been measured in.
@@ -145,6 +164,30 @@ export type InertiaShape = {
     vertices?: Array<Vertex>;
     shape?: InertiaShapeProperties;
     animation?: InertiaAnimationSchema;
+    /// Where this shape sits in the stack among the shapes it shares a list with
+    /// — its siblings on an actionable's canvas, or the ones drawn inside the
+    /// same parent. Higher draws in front.
+    ///
+    /// Order used to be position: shapes were drawn down the list, so moving one
+    /// in front of another meant moving it in the file, and a shape could not be
+    /// re-stacked without re-authoring the list around it. This is that ordering
+    /// said outright.
+    ///
+    /// Ties keep the order they were authored in, which is what a project
+    /// written before z-indexes existed is: every shape at 0, drawn down the
+    /// list exactly as before — see `stackedShapes`.
+    ///
+    /// It orders siblings and nothing else. A child is part of its parent's
+    /// drawing — it is drawn wherever the parent is drawn — so no z-index on it
+    /// can lift it out from behind a shape its parent sits behind.
+    zIndex?: number;
+    /// Which side of the actionable's content this shape is drawn on — see
+    /// `InertiaShapePosition`. Absent is the backdrop a shape has always been.
+    ///
+    /// Read on the shapes an actionable holds directly. A nested shape is part
+    /// of its parent's drawing and is drawn wherever the parent is, so its own
+    /// position says nothing.
+    position?: InertiaShapePosition;
     /// Whether this shape is drawn on a canvas of its own rather than sharing
     /// one with the shapes beside it.
     ///
@@ -907,6 +950,23 @@ function strokeTriangles(properties: InertiaShapeProperties): Array<Vertex> {
     return triangles;
 }
 
+/// These shapes back to front: the order they are drawn in, which is what their
+/// z-indexes say — see `InertiaShape.zIndex`.
+///
+/// Ties keep the order they were authored in, which is what keeps a project with
+/// no z-indexes in it drawing exactly as it did when the list *was* the
+/// ordering. The authored index is sorted on rather than trusted to survive, so
+/// this does not lean on the runtime's sort being a stable one.
+///
+/// A copy, never the list handed in: this is read on schema data the runtime
+/// holds onto, and sorting that in place would rewrite the file's own order.
+export function stackedShapes(shapes: Array<InertiaShape>): Array<InertiaShape> {
+    return shapes
+        .map((shape, index) => ({ shape, index }))
+        .sort((a, b) => ((a.shape.zIndex ?? 0) - (b.shape.zIndex ?? 0)) || (a.index - b.index))
+        .map(entry => entry.shape);
+}
+
 /// Everything this shape draws, as the one triangle list a GPU takes: the fill
 /// first, then the stroke over it.
 ///
@@ -921,7 +981,7 @@ function strokeTriangles(properties: InertiaShapeProperties): Array<Vertex> {
 /// all.
 export function shapeTriangles(shape: InertiaShape): Array<Vertex> {
     const own = ownTriangles(shape);
-    const children = shape.shapes ?? [];
+    const children = stackedShapes(shape.shapes ?? []);
     if (children.length === 0) {
         return placeVertices(own, shape);
     }
