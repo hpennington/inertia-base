@@ -1201,6 +1201,182 @@ export function normalizedShapeTriangles(shape: InertiaShape, bounds: InertiaRec
     }));
 }
 
+/// The shape a press at `point` lands on, wherever it is nested, or null for a
+/// press that misses every one of them.
+///
+/// `point` is in the units these shapes are authored in — multiples of the
+/// actionable's shorter side, measured from its middle, which is the same space
+/// `shapeBounds` answers in.
+///
+/// Front to back, so a press on two overlapping shapes picks the one drawn on
+/// top: the list is stacked and then read backwards, which is the drawing order
+/// reversed. What each shape is tested against is its drawing rather than its
+/// box — see `hitTestShape`.
+///
+/// Matches the Swift and Kotlin runtimes triangle for triangle, so a press that
+/// picks a shape on one runtime picks it on all three.
+export function hitTestShapes(shapes: Array<InertiaShape>, point: InertiaPoint): InertiaShape | null {
+    const stacked = stackedShapes(shapes);
+
+    for (let index = stacked.length - 1; index >= 0; index--) {
+        const hit = hitTestShape(stacked[index], point);
+        if (hit) {
+            return hit;
+        }
+    }
+
+    return null;
+}
+
+/// The shape a press at `point` lands on — this one, or the innermost shape
+/// nested inside it — or null for a press that misses everything here.
+///
+/// `point` is in the units this shape is measured in, which is the space its own
+/// `shapeTriangles` answer in: the parent's box, before this shape's placement
+/// has moved anything.
+///
+/// What is tested is the drawing rather than the box around it. A press in the
+/// corner of a circle's bounding box, or in the margin beside a triangle's
+/// slope, misses — so it falls through to whatever is behind instead of being
+/// swallowed by a backdrop the user cannot see there. An unfilled shape is its
+/// outline and nothing more, so a press through the middle of a ring misses it
+/// too.
+///
+/// Children first and back to front reversed, because that is the order they are
+/// drawn in and a press belongs to whatever is on top of the stack at that point
+/// — the same reading `shapeTriangles` lays down and this one inverts.
+export function hitTestShape(shape: InertiaShape, point: InertiaPoint): InertiaShape | null {
+    const local = unplacePoint(point, shape);
+    if (!local) {
+        return null;
+    }
+
+    const unit = childUnit(shape);
+    if (unit > 0) {
+        const children = stackedShapes(shape.shapes ?? []);
+
+        for (let index = children.length - 1; index >= 0; index--) {
+            const hit = hitTestShape(children[index], { x: local.x / unit, y: local.y / unit });
+            if (hit) {
+                return hit;
+            }
+        }
+    }
+
+    return hitsTriangles(local, ownTriangles(shape)) ? shape : null;
+}
+
+/// `point` carried back out of the shape's placement — the inverse of the trip
+/// `placeVertices` takes a corner on, so a press given in the parent's box lands
+/// in the space the shape's own corners were authored in.
+///
+/// Null for a shape scaled to nothing: it draws no area at all, so there is
+/// nothing for a press to land on and no scale to divide back out.
+function unplacePoint(point: InertiaPoint, shape: InertiaShape): InertiaPoint | null {
+    const placement = shape.transforms;
+    if (!placement) {
+        return point;
+    }
+
+    // The same falling back to the identity that `placeVertices` does, so a NaN
+    // out of a hand-edited file cannot make every press miss.
+    const scale = Number.isFinite(placement.scale) ? placement.scale : 1;
+    if (scale === 0) {
+        return null;
+    }
+
+    const [x, y] = placement.translate;
+    const translateX = Number.isFinite(x) ? x : 0;
+    const translateY = Number.isFinite(y) ? y : 0;
+    const degrees = (placement.rotate ?? 0) + (placement.rotateCenter ?? 0);
+
+    // Turned back rather than forward, and the move undone before the turn,
+    // because `placeVertices` moves last.
+    const radians = -(Number.isFinite(degrees) ? degrees : 0) * Math.PI / 180;
+    const cosine = Math.cos(radians);
+    const sine = Math.sin(radians);
+
+    const movedX = point.x - translateX;
+    const movedY = point.y - translateY;
+
+    return {
+        x: (movedX * cosine - movedY * sine) / scale,
+        y: (movedX * sine + movedY * cosine) / scale
+    };
+}
+
+/// Whether `point` falls on any of `triangles`, the list read three corners at a
+/// time — the way the renderer draws it, so what answers yes is exactly what was
+/// painted.
+///
+/// A trailing corner or two, which the renderer would not draw either, is left
+/// out rather than treated as a triangle of its own.
+function hitsTriangles(point: InertiaPoint, triangles: Array<Vertex>): boolean {
+    for (let index = 0; index + 2 < triangles.length; index += 3) {
+        if (containsPoint(
+            point,
+            triangles[index].position,
+            triangles[index + 1].position,
+            triangles[index + 2].position
+        )) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/// Whether `point` is inside the triangle `a`, `b`, `c`.
+///
+/// Which side of each edge the point falls on, by the sign of the cross product
+/// with that edge. Inside is the same side of all three; a zero is the point
+/// sitting on an edge, which counts as inside, so two triangles sharing an edge
+/// leave no seam for a press to fall through.
+///
+/// Winding is not assumed: the rings a shape resolves to are wound whichever way
+/// they were authored, and a fan of a clockwise ring is every bit as much a
+/// triangle as a fan of a counter-clockwise one.
+function containsPoint(point: InertiaPoint, a: InertiaPoint, b: InertiaPoint, c: InertiaPoint): boolean {
+    const side = (point: InertiaPoint, start: InertiaPoint, end: InertiaPoint) =>
+        (point.x - end.x) * (start.y - end.y) - (start.x - end.x) * (point.y - end.y);
+
+    const ab = side(point, a, b);
+    const bc = side(point, b, c);
+    const ca = side(point, c, a);
+
+    return !((ab < 0 || bc < 0 || ca < 0) && (ab > 0 || bc > 0 || ca > 0));
+}
+
+/// One canvas's artwork as SVG path data, in the canvas's own 0...1 space scaled
+/// to a box `width` by `height` CSS pixels.
+///
+/// What it is for: a `clip-path` on the element that listens for a press, so the
+/// browser only delivers one that landed on the drawing. A canvas is fitted to
+/// the box its shapes occupy together, and that box is mostly not shape — the
+/// corner beside a circle, the hole through an unfilled ring — and all of that
+/// has to go on reaching the app's own content underneath. The Swift runtime
+/// gets the same thing from `contentShape` and the Compose one by declining to
+/// consume the press.
+///
+/// The same triangles the renderer draws, read three corners at a time, wound as
+/// the shapes were authored: `clip-path` fills by the non-zero rule, so
+/// triangles overlapping — a stroke lying over the fill it encloses — add up
+/// rather than cancelling out.
+export function shapeClipPath(triangles: Array<Vertex>, width: number, height: number): string {
+    const parts: Array<string> = [];
+
+    for (let index = 0; index + 2 < triangles.length; index += 3) {
+        const corner = (offset: number) => {
+            const position = triangles[index + offset].position;
+            return `${(position.x * width).toFixed(3)} ${(position.y * height).toFixed(3)}`;
+        };
+
+        parts.push(`M${corner(0)}L${corner(1)}L${corner(2)}Z`);
+    }
+
+    return parts.join("");
+}
+
 /// How long this schema's own track runs, before any padding.
 export function trackDuration(schema: InertiaAnimationSchema): number {
     return playableKeyframes(schema).reduce((total, keyframe) => total + keyframe.duration, 0);
