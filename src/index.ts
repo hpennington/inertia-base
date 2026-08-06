@@ -376,11 +376,22 @@ export class InertiaDataModel {
 /// what it is told by `tree.id` — keeps one panel per container rather than one
 /// per app.
 export function inertiaTreeFor(model: InertiaDataModel, containerId: string): Tree {
-    const existing = model.trees.get(containerId);
+    return treeFor(model.trees, containerId);
+}
+
+/// The same, reached through the map of hierarchies rather than the model
+/// holding it.
+///
+/// The model is replaced wholesale on every write — React spreads it — while the
+/// map inside it is made once and mutated in place, so the map is the stable
+/// thing to hold on to. An effect keyed on the model would tear down and rebuild
+/// a node's registration every time anything else about the model changed.
+export function treeFor(trees: Map<string, Tree>, containerId: string): Tree {
+    const existing = trees.get(containerId);
     if (existing) return existing;
 
     const tree = new Tree(containerId);
-    model.trees.set(containerId, tree);
+    trees.set(containerId, tree);
     return tree;
 }
 
@@ -471,11 +482,35 @@ export class Tree {
     public id: string;
     public rootNode?: Node;
     public nodeMap: Map<string, Node> = new Map();
+    /// How many times the shape of this hierarchy has changed.
+    ///
+    /// A hierarchy is not built in one go: each view registers itself as it
+    /// mounts, which is after whoever would send the tree has run. Something has
+    /// to say when the tree became worth sending again, and the alternative —
+    /// sending on a timer, or only when the socket opens — is what left the
+    /// editor drawing an empty panel for a container it had never been told
+    /// about.
+    public revision: number = 0;
+    private listeners = new Set<() => void>();
 
     constructor(id: string) {
         this.id = id;
 
         this.addRelationship = this.addRelationship.bind(this)
+    }
+
+    /// Calls `listener` whenever the shape of this hierarchy changes, and hands
+    /// back the way to stop listening.
+    public subscribe(listener: () => void): () => void {
+        this.listeners.add(listener);
+        return () => {
+            this.listeners.delete(listener);
+        };
+    }
+
+    private changed(): void {
+        this.revision += 1;
+        this.listeners.forEach(listener => listener());
     }
 
     /// Files a node under its parent, and is safe to call again for a node this
@@ -486,13 +521,20 @@ export class Tree {
     /// lands the same id a second time. Appending blindly gave the parent two
     /// children with one id, so the hierarchy the editor drew listed the node
     /// twice while only one of the rows answered to the selection.
+    ///
+    /// A call that changes nothing bumps nothing: the registration effect runs
+    /// again for reasons of its own, and a revision that moved every time would
+    /// put the same tree on the wire on every render.
     addRelationship(id: string, parentId?: string, parentIsContainer: boolean = false) {
+        let didChange = false;
+
         // Get or create current node
         let currentNode = this.nodeMap.get(id);
         if (!currentNode) {
             currentNode = new Node(id, parentId);
             currentNode.tree = this;
             this.nodeMap.set(id, currentNode);
+            didChange = true;
         }
 
         if (parentId) {
@@ -501,16 +543,59 @@ export class Tree {
                 parentNode = new Node(parentId);
                 parentNode.tree = this;
                 this.nodeMap.set(parentId, parentNode);
+                didChange = true;
             }
 
             if (!parentNode.children.some(child => child.id === id)) {
                 parentNode.addChild(currentNode);
+                didChange = true;
             }
 
             if (parentIsContainer || (!this.rootNode && !parentNode.parent)) {
+                didChange = didChange || this.rootNode !== parentNode;
                 this.rootNode = parentNode;
             }
         }
+
+        if (didChange) this.changed();
+    }
+
+    /// Drops a node and everything under it.
+    ///
+    /// A hierarchy describes what is on screen, and on this runtime a view that
+    /// goes away is *gone* — a tab that is not the selected one is unmounted
+    /// rather than kept alive off screen the way SwiftUI's `TabView` keeps it.
+    /// Without this the tree only ever grew: the editor went on listing every
+    /// view the app had ever shown in that container, and a row for one of them
+    /// selected a node nothing would answer for.
+    ///
+    /// The subtree goes with it because that is what unmounting does — a child
+    /// removes itself too, and whichever of the two runs first, the other finds
+    /// nothing left to do.
+    removeNode(id: string): void {
+        const node = this.nodeMap.get(id);
+        if (!node) return;
+
+        const parent = node.parentId ? this.nodeMap.get(node.parentId) : undefined;
+        if (parent) {
+            parent.children = parent.children.filter(child => child.id !== id);
+        }
+
+        const stack: Node[] = [node];
+        while (stack.length > 0) {
+            const current = stack.pop()!;
+            this.nodeMap.delete(current.id);
+            current.children.forEach(child => stack.push(child));
+        }
+
+        node.parent = undefined;
+        // The hierarchy has no root left to draw from rather than one naming a
+        // node that is no longer in it.
+        if (this.rootNode && !this.nodeMap.has(this.rootNode.id)) {
+            this.rootNode = undefined;
+        }
+
+        this.changed();
     }
 
     // Encode to plain object for JSON serialization
