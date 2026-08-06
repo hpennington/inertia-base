@@ -326,8 +326,25 @@ export type InertiaAnimationState = {
 export class InertiaDataModel {
     public containerId: string;
     public inertiaSchemas: Map<string, InertiaAnimationSchema>;
-    public tree: Tree;
-    public actionableIdPairs: Set<ActionableIdPair>;
+    /// One hierarchy per container instance, keyed by the container's
+    /// `hierarchyId` — which is also the id of the tree filed under it.
+    ///
+    /// Keyed rather than held singly because a container's `hierarchyId` is what
+    /// tells its instances apart, and one app can have several mounted or swap
+    /// between them: a container per tab draws a different set of nodes each. A
+    /// `Tree` has one `rootNode`, so a shared one could only ever describe
+    /// whichever container registered last — every message the runtime sent
+    /// afterwards carried that container's hierarchy no matter which one the
+    /// user was acting in, and the editor merged the selection into the wrong
+    /// panel.
+    public trees: Map<string, Tree>;
+    /// What is picked in each container, keyed the same way as `trees`.
+    ///
+    /// Split for the reason the trees are: a `MessageActionables` is a tree and
+    /// the selection made *in* it, so sending one container's tree with every
+    /// container's selection tells the editor that nodes it cannot see in that
+    /// hierarchy are picked in it.
+    public actionableIdPairsByContainer: Map<string, Set<ActionableIdPair>>;
     public states: Map<string, InertiaAnimationState>;
     public actionableIdToAnimationIdMap: Map<string, string>;
     public isActionable: boolean = false
@@ -337,14 +354,59 @@ export class InertiaDataModel {
     /// editor resends.
     public activeTool: InertiaTool = InertiaTool.translate
 
-    constructor(containerId: string, inertiaSchemas: Map<string, InertiaAnimationSchema>, tree: Tree, actionableIdPairs: Set<ActionableIdPair>) {
+    constructor(containerId: string, inertiaSchemas: Map<string, InertiaAnimationSchema>) {
         this.containerId = containerId;
         this.inertiaSchemas = inertiaSchemas;
-        this.tree = tree;
-        this.actionableIdPairs = actionableIdPairs;
+        this.trees = new Map<string, Tree>();
+        this.actionableIdPairsByContainer = new Map<string, Set<ActionableIdPair>>();
         this.states = new Map<string, InertiaAnimationState>();
         this.actionableIdToAnimationIdMap = new Map<string, string>();
     }
+}
+
+/// What a data model holds about one container, as free functions rather than
+/// methods.
+///
+/// Free because React updates this model by spreading it — `{...prev, trees}` —
+/// which keeps the fields and drops the prototype, so anything reached as
+/// `model.something()` stops existing after the first `setState`.
+
+/// The hierarchy a container is building, made the first time it is asked for.
+/// The tree is named after the container instance, so the editor — which files
+/// what it is told by `tree.id` — keeps one panel per container rather than one
+/// per app.
+export function inertiaTreeFor(model: InertiaDataModel, containerId: string): Tree {
+    const existing = model.trees.get(containerId);
+    if (existing) return existing;
+
+    const tree = new Tree(containerId);
+    model.trees.set(containerId, tree);
+    return tree;
+}
+
+/// The container's hierarchy if it has started one, without making it.
+export function inertiaTree(model: InertiaDataModel | undefined, containerId: string | undefined | null): Tree | undefined {
+    if (!model || !containerId) return undefined;
+    return model.trees.get(containerId);
+}
+
+/// What is picked in one container.
+export function inertiaSelection(model: InertiaDataModel | undefined, containerId: string | undefined | null): Set<ActionableIdPair> {
+    if (!model || !containerId) return new Set();
+    return model.actionableIdPairsByContainer.get(containerId) ?? new Set();
+}
+
+/// The selections with one container's replaced — a new map, so React sees the
+/// change. The other containers are carried over untouched: the editor names one
+/// hierarchy at a time, and it was not talking about them.
+export function inertiaSelectionReplacing(
+    model: InertiaDataModel | undefined,
+    containerId: string,
+    pairs: Set<ActionableIdPair>
+): Map<string, Set<ActionableIdPair>> {
+    const next = new Map(model?.actionableIdPairsByContainer ?? []);
+    next.set(containerId, pairs);
+    return next;
 }
 
 export type InertiaID = string;
@@ -416,6 +478,14 @@ export class Tree {
         this.addRelationship = this.addRelationship.bind(this)
     }
 
+    /// Files a node under its parent, and is safe to call again for a node this
+    /// tree already holds.
+    ///
+    /// Idempotent because a view registers itself whenever its hierarchy id
+    /// lands, and a view that unmounts and comes back — a tab switch is one —
+    /// lands the same id a second time. Appending blindly gave the parent two
+    /// children with one id, so the hierarchy the editor drew listed the node
+    /// twice while only one of the rows answered to the selection.
     addRelationship(id: string, parentId?: string, parentIsContainer: boolean = false) {
         // Get or create current node
         let currentNode = this.nodeMap.get(id);
@@ -433,7 +503,9 @@ export class Tree {
                 this.nodeMap.set(parentId, parentNode);
             }
 
-            parentNode.addChild(currentNode);
+            if (!parentNode.children.some(child => child.id === id)) {
+                parentNode.addChild(currentNode);
+            }
 
             if (parentIsContainer || (!this.rootNode && !parentNode.parent)) {
                 this.rootNode = parentNode;
@@ -1484,7 +1556,12 @@ export class WebSocketClient {
     private socket: WebSocket | null = null;
     public isConnected = false;
 
-    public messageReceived?: (selectedIds: Set<ActionableIdPair>) => void;
+    /// The editor's selection, with the id of the hierarchy it was made in.
+    ///
+    /// The tree id travels with it because a runtime can be drawing more than
+    /// one — a container per tab, say — and a selection only means anything
+    /// against the one it was picked in.
+    public messageReceived?: (treeId: string, selectedIds: Set<ActionableIdPair>) => void;
     public messageReceivedSchema?: (schemas: InertiaSchemaWrapper[]) => void;
     public messageReceivedIsActionable?: (isActionable: boolean) => void;
     public messageReceivedTranslationEnded?: (actionableIds: Set<ActionableIdPair>, translationX: number, translationY: number) => void;
@@ -1770,7 +1847,7 @@ export class WebSocketClient {
                 case MessageType.actionables:
                     const msg: MessageActionables = payload;
                     console.log("[INERTIA_LOG]: Received actionables:", msg);
-                    this.messageReceived?.(new Set(msg.actionableIds));
+                    this.messageReceived?.(msg.tree.id, new Set(msg.actionableIds));
                     break;
 
                 case MessageType.schema:
