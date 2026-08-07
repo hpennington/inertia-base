@@ -816,9 +816,15 @@ export type MessagePlaybackProgress = {
 /// as-is, so the shape is the same one the JSON wire had.
 export type AnimationSignal =
     | { type: "pause" }
+    /// The editor's play button. Starts the animations that start themselves —
+    /// the `auto` ones. A `trigger` animation is the app's to start and goes on
+    /// waiting, exactly as it would with no editor attached.
     | { type: "resume" }
     | { type: "seek"; time: number }
-    | { type: "setLoopDuration"; duration: number };
+    | { type: "setLoopDuration"; duration: number }
+    /// The editor's Trigger action on the named animation, standing in for the
+    /// `trigger()` call the app would make.
+    | { type: "trigger"; id: string };
 
 export type MessageSignal = {
     signal: AnimationSignal;
@@ -841,6 +847,11 @@ export function decodeAnimationSignal(raw: any): AnimationSignal | null {
     if ("setLoopDuration" in raw) {
         const duration = Number(raw.setLoopDuration?._0);
         return Number.isFinite(duration) ? { type: "setLoopDuration", duration } : null;
+    }
+
+    if ("trigger" in raw) {
+        const id = raw.trigger?._0;
+        return typeof id === "string" && id.length > 0 ? { type: "trigger", id } : null;
     }
 
     return null;
