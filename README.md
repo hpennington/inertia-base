@@ -3,7 +3,7 @@
 **A keyframe animation editor for the UI you already built.**
 
 Wrap the views you want to move, run your app inside the Inertia editor, drag those views
-around on a timeline, and Inertia writes the result to a JSON file your app loads at
+around on a timeline, and Inertia writes the result to a `.inertia` file your app loads at
 runtime.
 
 There is no separate rendering surface and no exported video. The thing you animate in the
@@ -26,8 +26,8 @@ Inertia sits between the two. Your app is the canvas:
   drifts from the app.
 - **You keep native performance.** SwiftUI plays tracks through `KeyframeAnimator`;
   Compose and React sample the same tracks on their own clocks. Nothing is rasterized.
-- **The handoff is a JSON file.** Designers scrub a timeline, developers `git add` the
-  result. One file, three runtimes, identical ids.
+- **The handoff is a `.inertia` file.** Designers scrub a timeline, developers `git add`
+  the result. One file, three runtimes, identical ids.
 - **Editing is live.** The app connects to the editor over a local WebSocket, reports its
   tagged hierarchy, and receives schema updates as you edit. What you see running is the
   animation as it currently stands.
@@ -36,16 +36,17 @@ Inertia sits between the two. Your app is the canvas:
 
 | Runtime | Package | Editor target |
 | --- | --- | --- |
-| **SwiftUI** | `Inertia` (Swift package) | iOS Simulator, driven through `simctl` |
-| **Jetpack Compose** | `com.github.hpennington:inertia-compose` | Android emulator, over `adb` |
-| **React** | `inertia-react` + `inertia-base` | Your dev server, in a `WKWebView` |
+| **SwiftUI** | [`Inertia`](https://github.com/hpennington/Inertia) (Swift package) | iOS Simulator, driven through `simctl` |
+| **Jetpack Compose** | [`com.github.hpennington:inertia-compose`](https://github.com/hpennington/inertia-compose) | Android emulator, over `adb` |
+| **React** | [`inertia-react`](https://github.com/hpennington/inertia-react) + [`inertia-base`](https://github.com/hpennington/inertia-base) | Your dev server, in a `WKWebView` |
 
-The editor is a macOS app in every case.
+The editor is a macOS app in every case. A worked app on all three runtimes lives in
+[**inertia-example**](https://github.com/hpennington/inertia-example).
 
 ## Features
 
 - 🌍 Three runtimes — SwiftUI, Jetpack Compose, React — on one file format
-- 🎨 WYSIWYG keyframe editor with MessagePack export
+- 🎨 WYSIWYG keyframe editor exporting binary MessagePack `.inertia` files
 - ⚡ Native playback: `KeyframeAnimator` on iOS, native clocks on Android and web
 - 🎛️ Playback control from your app: `trigger`, `cancel`, `restart`, `isCancelled`
 - 🔁 Looping or play-once, switchable at runtime
@@ -59,7 +60,8 @@ The editor is a macOS app in every case.
 
 ### SwiftUI
 
-In Xcode: **File → Add Package Dependencies…** and enter
+The runtime lives in [**hpennington/Inertia**](https://github.com/hpennington/Inertia) and
+ships as a Swift package. In Xcode: **File → Add Package Dependencies…** and enter
 `https://github.com/hpennington/Inertia`. Or in a `Package.swift`:
 
 ```swift
@@ -73,13 +75,16 @@ targets: [
 
 Requires **iOS 17+ / macOS 14+** and Swift 5.9+. The iOS 17 floor is `KeyframeAnimator`.
 
-Add an `animation.inertia` containing `[]` to your target's **Copy Bundle Resources** — the
-container reads it by `id` at init and traps if it is missing. Then add `-D INERTIA_EDITOR`
-to **Other Swift Flags** for the configuration you want to edit in.
+Add the `animation.inertia` the editor writes to your target's **Copy Bundle Resources** —
+the container reads it by `id` at init and traps if it is missing. It is a binary file, so
+take it from the editor rather than hand-writing one; a file with no animations in it is
+valid. Then add `-D INERTIA_EDITOR` to **Other Swift Flags** for the configuration you want
+to edit in.
 
 ### Jetpack Compose
 
-The runtime is published through JitPack:
+The runtime lives in [**hpennington/inertia-compose**](https://github.com/hpennington/inertia-compose)
+and is published through JitPack:
 
 **`settings.gradle.kts`**
 
@@ -97,13 +102,13 @@ dependencyResolutionManagement {
 
 ```kotlin
 dependencies {
-    implementation("com.github.hpennington:inertia-compose:v1.0.8")
+    implementation("com.github.hpennington:inertia-compose:v1.7.0")
 }
 ```
 
-GLES shape rendering landed after `v1.0.8` was cut, so a build pinned to that tag animates
-views but draws no shapes. Until a newer tag is published, take it from the branch or a
-commit instead — JitPack resolves both:
+`v1.7.0` drops the container's `baseURL` parameter — the runtime dials the editor itself
+now; `v1.6.0` added GLES shape rendering. To track unreleased changes, take the runtime
+from the branch or a commit instead — JitPack resolves both:
 
 ```kotlin
 implementation("com.github.hpennington:inertia-compose:main-SNAPSHOT")
@@ -116,11 +121,29 @@ source set. See [Installation](https://hpennington.github.io/Inertia/getting-sta
 
 ### React
 
-The two npm packages are built out of the repository rather than published to a registry —
-`inertia-base` is the framework-agnostic core, `inertia-react` the bindings on top of it:
+Both packages are published to npm.
+[**inertia-react**](https://github.com/hpennington/inertia-react) is the bindings package
+and pulls in [**inertia-base**](https://github.com/hpennington/inertia-base), the
+framework-agnostic core, so installing the one is enough:
 
 ```sh
-./scripts/build_react.sh
+npm install inertia-react
+```
+
+React and React DOM 18.3.1 are **peer** dependencies, so your app supplies them:
+
+```sh
+npm install react@18.3.1 react-dom@18.3.1
+```
+
+To track unreleased changes, build the packages from source and point your app at the
+checkouts instead:
+
+```sh
+git clone https://github.com/hpennington/inertia-base
+git clone https://github.com/hpennington/inertia-react
+(cd inertia-base && npm install && npm run build)
+(cd inertia-react && npm install && npm run build)
 ```
 
 **`package.json`**
@@ -128,13 +151,10 @@ The two npm packages are built out of the repository rather than published to a 
 ```json
 {
   "dependencies": {
-    "inertia-react": "file:../path/to/runtime-web/inertia-react"
+    "inertia-react": "file:../path/to/inertia-react"
   }
 }
 ```
-
-React 18.3.1 is a **peer** dependency, so your app supplies it — a second copy of React
-resolving inside the package breaks hooks.
 
 ## Usage
 
@@ -211,8 +231,7 @@ class MainActivity : ComponentActivity() {
                 InertiaContainer(
                     dev = true,
                     id = "animation",
-                    hierarchyId = "animation",
-                    baseURL = "ws://127.0.0.1:8070"  // the editor, through `adb reverse`
+                    hierarchyId = "animation"
                 ) {
                     DemoApp()
                 }
@@ -243,6 +262,19 @@ fun DemoApp() {
     }
 }
 ```
+
+The container takes no endpoint: in editor mode it dials `ws://127.0.0.1:8070`, the
+runtime's own port, which reaches the Mac through the `adb reverse` tunnel the editor sets
+up for the device it launches on. An app that has to find the editor somewhere else — a
+device on the network rather than tunnelled — moves it once, before the first container
+composes:
+
+```kotlin
+WebSocketClient.shared.setEndpoint(host = "192.168.1.42")
+```
+
+`inertiaDefaultHost` and `inertiaDefaultPort` are public, so an app can build that address
+from them rather than repeating the port.
 
 ### React
 
@@ -291,8 +323,9 @@ export default function App() {
 ```
 
 Outside editor mode the React container fetches `<baseURL>/<id>.inertia` over HTTP, so
-something has to serve the editor's animations directory with CORS headers. The repository
-ships `example/demo.inertia/animations/serve_animations.py` for exactly that. In editor
+something has to serve the editor's animations directory with CORS headers.
+[inertia-example](https://github.com/hpennington/inertia-example) ships
+`demo.inertia/animations/serve_animations.py` for exactly that. In editor
 mode the socket is dialed at `ws://127.0.0.1:8080` regardless of `baseURL`.
 
 ### Shapes
@@ -343,7 +376,7 @@ while the actionable it backs is still waiting on your `trigger` call.
 | | SwiftUI | Compose | React |
 | --- | --- | --- | --- |
 | Import | `import Inertia` | `org.inertiagraphics.inertia` | `from "inertia-react"` |
-| Container | `InertiaContainer(dev:id:hierarchyId:)` | `InertiaContainer(dev, id, hierarchyId, baseURL)` | `<InertiaContainer dev id hierarchyId baseURL>` |
+| Container | `InertiaContainer(dev:id:hierarchyId:)` | `InertiaContainer(dev, id, hierarchyId)` | `<InertiaContainer dev id hierarchyId baseURL>` |
 | Tag a view | `.inertia("card0")` | `Inertia(id = "card0") { … }` | `<Inertia id="card0">` |
 | Playback handle | `@Environment(\.inertiaDataModel)` | `LocalInertia.current` | `useInertia()` |
 | Start | `trigger(_:)` | `trigger(…)` | `trigger(…)` |
@@ -363,7 +396,8 @@ them. `cancel` returns an animation to its initial values and leaves it there un
 
 ## Animation file format
 
-The editor writes an array of animation objects, one per tagged id:
+A `.inertia` file is MessagePack, not text — the editor writes a binary array of animation
+objects, one per tagged id. Shown here as JSON for readability:
 
 ```json
 [
@@ -479,9 +513,9 @@ HTTP on React.
 The runtimes are deliberately parallel, but they are not at the same level of maturity.
 
 - **SwiftUI is strict about the bundled file.** With `dev: false` the container reads the
-  resource during init and traps if it is missing or fails to decode. `[]` is valid; absent
-  is a crash. Compose and React log an error and leave the views at their layout
-  positions instead.
+  resource during init and traps if it is missing or fails to decode. A file with no
+  animations in it is valid; an absent one is a crash. Compose and React log an error and
+  leave the views at their layout positions instead.
 - **Interpolation differs.** SwiftUI fits a cubic spline across the whole track, so motion
   can overshoot a keyframe on the way to the next. Compose and React solve each segment
   with a cubic ease-in-out, which never overshoots. The poses at the keyframes are
@@ -496,6 +530,16 @@ The runtimes are deliberately parallel, but they are not at the same level of ma
 [Choosing a runtime](https://hpennington.github.io/Inertia/getting-started/runtimes/) has
 the full comparison.
 
+## Repositories
+
+| Repository | What it is |
+| --- | --- |
+| [hpennington/Inertia](https://github.com/hpennington/Inertia) | The SwiftUI runtime, this repo |
+| [hpennington/inertia-compose](https://github.com/hpennington/inertia-compose) | The Jetpack Compose runtime, published through JitPack |
+| [hpennington/inertia-react](https://github.com/hpennington/inertia-react) | The React bindings |
+| [hpennington/inertia-base](https://github.com/hpennington/inertia-base) | The framework-agnostic core `inertia-react` is built on |
+| [hpennington/inertia-example](https://github.com/hpennington/inertia-example) | The same demo app on all three runtimes, with a shared `.inertia` project |
+
 ## Documentation
 
 - [Installation](https://hpennington.github.io/Inertia/getting-started/installation/) — add a runtime to your app
@@ -509,7 +553,7 @@ the full comparison.
 | | SwiftUI | Compose | React |
 | --- | --- | --- | --- |
 | Author in the editor | ✅ | ✅ | ✅ |
-| Ship the result | ✅ (bundle the JSON) | ✅ (`assets/`) | ✅ (serve the JSON) |
+| Ship the result | ✅ (bundle the file) | ✅ (`assets/`) | ✅ (serve the file) |
 | Shape rendering | ✅ Metal | ✅ GLES 2.0 | ✅ WebGL |
 | Distribution | Swift Package Manager | JitPack | build from source |
 

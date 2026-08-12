@@ -77,6 +77,25 @@ export enum InertiaShapeType {
     triangle = "triangle"
 }
 
+/// Which side of the actionable's own content a shape is drawn on.
+///
+/// A shape has always been a backdrop: drawn behind whatever the element
+/// renders, so the label over it stays readable and the drawing stays a drawing.
+/// `top` is that same shape put in front instead — a badge, a highlight, a
+/// scribble over the view rather than under it — and it is the same canvas
+/// either way, painted over the content instead of under it.
+///
+/// This sits above `InertiaShape.zIndex` rather than beside it: a z-index orders
+/// the shapes drawn on one side of the content, and nothing drawn behind an
+/// element can be lifted in front of it by counting higher.
+export enum InertiaShapePosition {
+    /// Behind the actionable's content — where every shape authored before this
+    /// existed was drawn, which is why it is what an absent `position` means.
+    bottom = "bottom",
+    /// Over the actionable's content.
+    top = "top"
+}
+
 /// A drawn vector as the editor records it: what it is, how big, and how it is
 /// painted — the size in the same multiples of the actionable its corners would
 /// have been measured in.
@@ -102,9 +121,9 @@ export type InertiaShapeProperties = {
     stroke?: InertiaColor;
 
     /// How thick the outline is, in the units the shape is sized in — multiples
-    /// of the actionable's own frame, the same as `width` and `height`, so a
+    /// of the actionable's shorter side, the same as `width` and `height`, so a
     /// stroke keeps its weight relative to the shape at every size that frame
-    /// takes.
+    /// takes, and is the same weight across as it is down.
     ///
     /// The stroke is drawn *inside* the outline: a shape occupies exactly the
     /// box it was authored at whether or not it is stroked, so adding a stroke
@@ -115,11 +134,16 @@ export type InertiaShapeProperties = {
 }
 
 /// A shape as it is authored alongside an animation: a ring of corners, each
-/// carrying its own colour, measured against the actionable it belongs to —
-/// (0, 0) that view's top-left, (1, 1) its bottom-right.
+/// carrying its own colour, measured against the actionable it belongs to — the
+/// origin its outline is drawn about, and 1 that view's shorter side.
 ///
-/// Nothing holds a shape to that box, though. Coordinates outside 0...1 reach
-/// past the actionable and go on being drawn, because the canvas is fitted to
+/// One side rather than each of them, so a shape is drawn in a square space and
+/// keeps the proportions it was described with: a circle of size 1 is round on a
+/// view of any shape, and only a rectangle or an oval — the two descriptions
+/// that say both of their measurements — is drawn wider than it is tall.
+///
+/// Nothing holds a shape to that box, though. Coordinates past that side reach
+/// beyond the actionable and go on being drawn, because the canvas is fitted to
 /// the shapes rather than to the view: a shape three times the size of the card
 /// it backs is authored simply by saying 3.
 ///
@@ -140,6 +164,85 @@ export type InertiaShape = {
     vertices?: Array<Vertex>;
     shape?: InertiaShapeProperties;
     animation?: InertiaAnimationSchema;
+    /// Where this shape sits in the stack among the shapes it shares a list with
+    /// — its siblings on an actionable's canvas, or the ones drawn inside the
+    /// same parent. Higher draws in front.
+    ///
+    /// Order used to be position: shapes were drawn down the list, so moving one
+    /// in front of another meant moving it in the file, and a shape could not be
+    /// re-stacked without re-authoring the list around it. This is that ordering
+    /// said outright.
+    ///
+    /// Ties keep the order they were authored in, which is what a project
+    /// written before z-indexes existed is: every shape at 0, drawn down the
+    /// list exactly as before — see `stackedShapes`.
+    ///
+    /// It orders siblings and nothing else. A child is part of its parent's
+    /// drawing — it is drawn wherever the parent is drawn — so no z-index on it
+    /// can lift it out from behind a shape its parent sits behind.
+    zIndex?: number;
+    /// Which side of the actionable's content this shape is drawn on — see
+    /// `InertiaShapePosition`. Absent is the backdrop a shape has always been.
+    ///
+    /// Read on the shapes an actionable holds directly. A nested shape is part
+    /// of its parent's drawing and is drawn wherever the parent is, so its own
+    /// position says nothing.
+    position?: InertiaShapePosition;
+    /// Whether this shape is drawn on a canvas of its own rather than sharing
+    /// one with the shapes beside it.
+    ///
+    /// A canvas is otherwise earned: a track needs one, because a shape that
+    /// moves independently cannot share a vertex buffer with shapes that do not,
+    /// and so does a selection, because the border and handles are fitted to one
+    /// shape's box. This is that decision made up front instead — what to reach
+    /// for when a track is coming later, or when a shape has to stay a layer of
+    /// its own. Absent is a shape that shares, which is what every shape
+    /// authored before this asked for one did.
+    ownCanvas?: boolean;
+    /// Whether this shape is drawn while the animation it belongs to is waiting
+    /// to play, or only once it is playing.
+    ///
+    /// A shape has always been backdrop: drawn from the moment the element it
+    /// backs is on screen, whether or not anything has been triggered. That is
+    /// what a halo behind a card wants, and exactly what a shape that is *part*
+    /// of the animation — the puff a button gives off when it is pressed — does
+    /// not: it sat there in full view for however long the app waited to trigger
+    /// the track, and the only way to keep it off screen until then was to
+    /// author an opacity of zero into the first keyframe of a track of its own.
+    ///
+    /// False is that said outright: nothing is drawn until the run is on screen,
+    /// and the shape appears with it. Absent is the backdrop every shape
+    /// authored before this was.
+    ///
+    /// Read on the shapes an actionable holds directly. A nested shape is part
+    /// of its parent's drawing — drawn into the parent's vertex buffer — so it
+    /// appears and disappears with whatever it is drawn inside of.
+    showsBeforeAnimation?: boolean;
+    /// Where this shape sits inside whatever holds it: the actionable whose
+    /// canvas it is drawn on, or — for a nested shape — the shape it is drawn
+    /// inside of.
+    ///
+    /// A shape's corners are drawn about the origin of the box that holds it, so
+    /// every described vector was authored dead centre of its parent and there
+    /// was no way to say otherwise. This is that placement said outright, in the
+    /// same five properties a track interpolates. The translation is a fraction
+    /// of the parent's own box, the way every other measurement on a shape is.
+    ///
+    /// Placement rather than animation: it is baked into the corners the
+    /// renderer is handed — which is what lets a *nested* shape be placed at all,
+    /// since a child is drawn into its parent's vertex buffer and has no canvas
+    /// of its own to transform — and a track the shape carries plays on top of
+    /// it. Absent is the identity, which is where every shape authored before
+    /// this was drawn.
+    transforms?: InertiaAnimationValues;
+    /// The shapes drawn inside this one, in the units of *its* box — 1 is this
+    /// shape's shorter side, the way 1 is the view's shorter side one level up.
+    ///
+    /// A child is part of its parent's drawing rather than a drawing of its own:
+    /// it is drawn on the parent's canvas, and every transform that moves the
+    /// parent moves it too. Absent from a project authored before nesting, which
+    /// reads unchanged.
+    shapes?: Array<InertiaShape>;
 }
 
 export type InertiaRect = {
@@ -168,7 +271,8 @@ export enum MessageType {
     signal = "signal",
     playbackProgress = "playbackProgress",
     tool = "tool",
-    edit = "edit"
+    edit = "edit",
+    nodeMeasured = "nodeMeasured"
 }
 
 /// What a drag in the runtime's viewport edits.
@@ -222,8 +326,25 @@ export type InertiaAnimationState = {
 export class InertiaDataModel {
     public containerId: string;
     public inertiaSchemas: Map<string, InertiaAnimationSchema>;
-    public tree: Tree;
-    public actionableIdPairs: Set<ActionableIdPair>;
+    /// One hierarchy per container instance, keyed by the container's
+    /// `hierarchyId` — which is also the id of the tree filed under it.
+    ///
+    /// Keyed rather than held singly because a container's `hierarchyId` is what
+    /// tells its instances apart, and one app can have several mounted or swap
+    /// between them: a container per tab draws a different set of nodes each. A
+    /// `Tree` has one `rootNode`, so a shared one could only ever describe
+    /// whichever container registered last — every message the runtime sent
+    /// afterwards carried that container's hierarchy no matter which one the
+    /// user was acting in, and the editor merged the selection into the wrong
+    /// panel.
+    public trees: Map<string, Tree>;
+    /// What is picked in each container, keyed the same way as `trees`.
+    ///
+    /// Split for the reason the trees are: a `MessageActionables` is a tree and
+    /// the selection made *in* it, so sending one container's tree with every
+    /// container's selection tells the editor that nodes it cannot see in that
+    /// hierarchy are picked in it.
+    public actionableIdPairsByContainer: Map<string, Set<ActionableIdPair>>;
     public states: Map<string, InertiaAnimationState>;
     public actionableIdToAnimationIdMap: Map<string, string>;
     public isActionable: boolean = false
@@ -233,14 +354,70 @@ export class InertiaDataModel {
     /// editor resends.
     public activeTool: InertiaTool = InertiaTool.translate
 
-    constructor(containerId: string, inertiaSchemas: Map<string, InertiaAnimationSchema>, tree: Tree, actionableIdPairs: Set<ActionableIdPair>) {
+    constructor(containerId: string, inertiaSchemas: Map<string, InertiaAnimationSchema>) {
         this.containerId = containerId;
         this.inertiaSchemas = inertiaSchemas;
-        this.tree = tree;
-        this.actionableIdPairs = actionableIdPairs;
+        this.trees = new Map<string, Tree>();
+        this.actionableIdPairsByContainer = new Map<string, Set<ActionableIdPair>>();
         this.states = new Map<string, InertiaAnimationState>();
         this.actionableIdToAnimationIdMap = new Map<string, string>();
     }
+}
+
+/// What a data model holds about one container, as free functions rather than
+/// methods.
+///
+/// Free because React updates this model by spreading it — `{...prev, trees}` —
+/// which keeps the fields and drops the prototype, so anything reached as
+/// `model.something()` stops existing after the first `setState`.
+
+/// The hierarchy a container is building, made the first time it is asked for.
+/// The tree is named after the container instance, so the editor — which files
+/// what it is told by `tree.id` — keeps one panel per container rather than one
+/// per app.
+export function inertiaTreeFor(model: InertiaDataModel, containerId: string): Tree {
+    return treeFor(model.trees, containerId);
+}
+
+/// The same, reached through the map of hierarchies rather than the model
+/// holding it.
+///
+/// The model is replaced wholesale on every write — React spreads it — while the
+/// map inside it is made once and mutated in place, so the map is the stable
+/// thing to hold on to. An effect keyed on the model would tear down and rebuild
+/// a node's registration every time anything else about the model changed.
+export function treeFor(trees: Map<string, Tree>, containerId: string): Tree {
+    const existing = trees.get(containerId);
+    if (existing) return existing;
+
+    const tree = new Tree(containerId);
+    trees.set(containerId, tree);
+    return tree;
+}
+
+/// The container's hierarchy if it has started one, without making it.
+export function inertiaTree(model: InertiaDataModel | undefined, containerId: string | undefined | null): Tree | undefined {
+    if (!model || !containerId) return undefined;
+    return model.trees.get(containerId);
+}
+
+/// What is picked in one container.
+export function inertiaSelection(model: InertiaDataModel | undefined, containerId: string | undefined | null): Set<ActionableIdPair> {
+    if (!model || !containerId) return new Set();
+    return model.actionableIdPairsByContainer.get(containerId) ?? new Set();
+}
+
+/// The selections with one container's replaced — a new map, so React sees the
+/// change. The other containers are carried over untouched: the editor names one
+/// hierarchy at a time, and it was not talking about them.
+export function inertiaSelectionReplacing(
+    model: InertiaDataModel | undefined,
+    containerId: string,
+    pairs: Set<ActionableIdPair>
+): Map<string, Set<ActionableIdPair>> {
+    const next = new Map(model?.actionableIdPairsByContainer ?? []);
+    next.set(containerId, pairs);
+    return next;
 }
 
 export type InertiaID = string;
@@ -305,6 +482,16 @@ export class Tree {
     public id: string;
     public rootNode?: Node;
     public nodeMap: Map<string, Node> = new Map();
+    /// How many times the shape of this hierarchy has changed.
+    ///
+    /// A hierarchy is not built in one go: each view registers itself as it
+    /// mounts, which is after whoever would send the tree has run. Something has
+    /// to say when the tree became worth sending again, and the alternative —
+    /// sending on a timer, or only when the socket opens — is what left the
+    /// editor drawing an empty panel for a container it had never been told
+    /// about.
+    public revision: number = 0;
+    private listeners = new Set<() => void>();
 
     constructor(id: string) {
         this.id = id;
@@ -312,13 +499,42 @@ export class Tree {
         this.addRelationship = this.addRelationship.bind(this)
     }
 
+    /// Calls `listener` whenever the shape of this hierarchy changes, and hands
+    /// back the way to stop listening.
+    public subscribe(listener: () => void): () => void {
+        this.listeners.add(listener);
+        return () => {
+            this.listeners.delete(listener);
+        };
+    }
+
+    private changed(): void {
+        this.revision += 1;
+        this.listeners.forEach(listener => listener());
+    }
+
+    /// Files a node under its parent, and is safe to call again for a node this
+    /// tree already holds.
+    ///
+    /// Idempotent because a view registers itself whenever its hierarchy id
+    /// lands, and a view that unmounts and comes back — a tab switch is one —
+    /// lands the same id a second time. Appending blindly gave the parent two
+    /// children with one id, so the hierarchy the editor drew listed the node
+    /// twice while only one of the rows answered to the selection.
+    ///
+    /// A call that changes nothing bumps nothing: the registration effect runs
+    /// again for reasons of its own, and a revision that moved every time would
+    /// put the same tree on the wire on every render.
     addRelationship(id: string, parentId?: string, parentIsContainer: boolean = false) {
+        let didChange = false;
+
         // Get or create current node
         let currentNode = this.nodeMap.get(id);
         if (!currentNode) {
             currentNode = new Node(id, parentId);
             currentNode.tree = this;
             this.nodeMap.set(id, currentNode);
+            didChange = true;
         }
 
         if (parentId) {
@@ -327,14 +543,59 @@ export class Tree {
                 parentNode = new Node(parentId);
                 parentNode.tree = this;
                 this.nodeMap.set(parentId, parentNode);
+                didChange = true;
             }
 
-            parentNode.addChild(currentNode);
+            if (!parentNode.children.some(child => child.id === id)) {
+                parentNode.addChild(currentNode);
+                didChange = true;
+            }
 
             if (parentIsContainer || (!this.rootNode && !parentNode.parent)) {
+                didChange = didChange || this.rootNode !== parentNode;
                 this.rootNode = parentNode;
             }
         }
+
+        if (didChange) this.changed();
+    }
+
+    /// Drops a node and everything under it.
+    ///
+    /// A hierarchy describes what is on screen, and on this runtime a view that
+    /// goes away is *gone* — a tab that is not the selected one is unmounted
+    /// rather than kept alive off screen the way SwiftUI's `TabView` keeps it.
+    /// Without this the tree only ever grew: the editor went on listing every
+    /// view the app had ever shown in that container, and a row for one of them
+    /// selected a node nothing would answer for.
+    ///
+    /// The subtree goes with it because that is what unmounting does — a child
+    /// removes itself too, and whichever of the two runs first, the other finds
+    /// nothing left to do.
+    removeNode(id: string): void {
+        const node = this.nodeMap.get(id);
+        if (!node) return;
+
+        const parent = node.parentId ? this.nodeMap.get(node.parentId) : undefined;
+        if (parent) {
+            parent.children = parent.children.filter(child => child.id !== id);
+        }
+
+        const stack: Node[] = [node];
+        while (stack.length > 0) {
+            const current = stack.pop()!;
+            this.nodeMap.delete(current.id);
+            current.children.forEach(child => stack.push(child));
+        }
+
+        node.parent = undefined;
+        // The hierarchy has no root left to draw from rather than one naming a
+        // node that is no longer in it.
+        if (this.rootNode && !this.nodeMap.has(this.rootNode.id)) {
+            this.rootNode = undefined;
+        }
+
+        this.changed();
     }
 
     // Encode to plain object for JSON serialization
@@ -412,6 +673,26 @@ export type MessageSelectedNodeProperties = {
     /// from a runtime that only knows how to move a node, which is why the
     /// editor decodes it as optional.
     values?: InertiaAnimationValues;
+}
+
+/// Runtime → editor: the box an actionable was laid out in, in CSS pixels.
+///
+/// A shape is authored in multiples of the element it is drawn behind — 1 is
+/// that element's shorter side — so the drawing alone never says how big it is.
+/// Only the app knows: layout is what decides it, and it decides it again at
+/// every size the app is run at. This is that measurement, sent as it is taken,
+/// so the editor can draw a shape at the size it is really drawn at without a
+/// view of the app to measure it in.
+///
+/// Carries the whole pair, not just the size: the id says which shapes it
+/// measures, and the prefix is the schema they are authored on — which is what
+/// the editor keys a shape by, since every instance of an actionable draws the
+/// same ones.
+export type MessageNodeMeasured = {
+    hierarchyIdPrefix: string;
+    hierarchyId: string;
+    sizeX: number;
+    sizeY: number;
 }
 
 /// Editor → runtime: which tool a gesture on a selected node applies.
@@ -535,9 +816,15 @@ export type MessagePlaybackProgress = {
 /// as-is, so the shape is the same one the JSON wire had.
 export type AnimationSignal =
     | { type: "pause" }
+    /// The editor's play button. Starts the animations that start themselves —
+    /// the `auto` ones. A `trigger` animation is the app's to start and goes on
+    /// waiting, exactly as it would with no editor attached.
     | { type: "resume" }
     | { type: "seek"; time: number }
-    | { type: "setLoopDuration"; duration: number };
+    | { type: "setLoopDuration"; duration: number }
+    /// The editor's Trigger action on the named animation, standing in for the
+    /// `trigger()` call the app would make.
+    | { type: "trigger"; id: string };
 
 export type MessageSignal = {
     signal: AnimationSignal;
@@ -562,6 +849,11 @@ export function decodeAnimationSignal(raw: any): AnimationSignal | null {
         return Number.isFinite(duration) ? { type: "setLoopDuration", duration } : null;
     }
 
+    if ("trigger" in raw) {
+        const id = raw.trigger?._0;
+        return typeof id === "string" && id.length > 0 ? { type: "trigger", id } : null;
+    }
+
     return null;
 }
 
@@ -583,6 +875,22 @@ export const InertiaPlayback = {
         }
         const { lowerBound, upperBound } = InertiaPlayback.loopDurationRange;
         return Math.min(Math.max(seconds, lowerBound), upperBound);
+    },
+
+    /// One turn of the timeline for a set of schemas: the loop, or the longest
+    /// track in them where something was recorded past it.
+    ///
+    /// The runtime works this out for the app it is animating; a canvas view
+    /// works it out for the schemas it draws on its own. One answer for both, so
+    /// a track padded in here and the same track padded over there are the same
+    /// length and the two playheads mean the same thing.
+    duration(loop: number, schemas: Iterable<InertiaAnimationSchema>): number {
+        let longestTrack = 0;
+        for (const schema of schemas) {
+            longestTrack = Math.max(longestTrack, trackDuration(schema));
+        }
+
+        return Math.max(loop, longestTrack);
     }
 } as const;
 
@@ -829,6 +1137,23 @@ function strokeTriangles(properties: InertiaShapeProperties): Array<Vertex> {
     return triangles;
 }
 
+/// These shapes back to front: the order they are drawn in, which is what their
+/// z-indexes say — see `InertiaShape.zIndex`.
+///
+/// Ties keep the order they were authored in, which is what keeps a project with
+/// no z-indexes in it drawing exactly as it did when the list *was* the
+/// ordering. The authored index is sorted on rather than trusted to survive, so
+/// this does not lean on the runtime's sort being a stable one.
+///
+/// A copy, never the list handed in: this is read on schema data the runtime
+/// holds onto, and sorting that in place would rewrite the file's own order.
+export function stackedShapes(shapes: Array<InertiaShape>): Array<InertiaShape> {
+    return shapes
+        .map((shape, index) => ({ shape, index }))
+        .sort((a, b) => ((a.shape.zIndex ?? 0) - (b.shape.zIndex ?? 0)) || (a.index - b.index))
+        .map(entry => entry.shape);
+}
+
 /// Everything this shape draws, as the one triangle list a GPU takes: the fill
 /// first, then the stroke over it.
 ///
@@ -836,7 +1161,78 @@ function strokeTriangles(properties: InertiaShapeProperties): Array<Vertex> {
 /// down the list and keeps no depth — which is what puts the outline on top of
 /// the area it encloses rather than under it. A shape authored corner by corner
 /// is all fill, since a stroke is something a *described* vector carries.
+///
+/// Everything here comes out placed by `transforms`, children included: a child
+/// is drawn into this buffer rather than onto a canvas of its own, so baking the
+/// placement into the corners is the only place a nested shape can be moved at
+/// all.
 export function shapeTriangles(shape: InertiaShape): Array<Vertex> {
+    const own = ownTriangles(shape);
+    const children = stackedShapes(shape.shapes ?? []);
+    if (children.length === 0) {
+        return placeVertices(own, shape);
+    }
+
+    // A child is measured in this shape's box and centred where this shape is
+    // centred, so scaling by that box is the whole of the transform: the origin
+    // the two share needs no offset. Where the child asked to sit in that box is
+    // already in the corners it hands over.
+    const unit = childUnit(shape);
+    return placeVertices(
+        own.concat(children.flatMap(child => scaleVertices(shapeTriangles(child), unit))),
+        shape
+    );
+}
+
+/// `vertices` moved to where `shape.transforms` places it in its parent.
+///
+/// Scaled and turned about the origin of the parent's box — which is the point a
+/// described vector's outline is drawn around, so a shape left where it was
+/// authored scales and turns about its own middle — and then moved, in fractions
+/// of that same box.
+///
+/// Both rotations turn about that one point. `rotate` and `rotateCenter` differ
+/// only in the anchor a view is turned about, and a ring of corners has no view
+/// box to anchor to, so what a shape does with them is the one rotation their
+/// sum describes.
+///
+/// Opacity is carried in the corners' own alpha, since the fade has to survive
+/// being flattened into a buffer shared with shapes that are not faded.
+///
+/// Matches the Swift and Kotlin runtimes corner for corner, so one placed shape
+/// is the same drawing on all three.
+function placeVertices(vertices: Array<Vertex>, shape: InertiaShape): Array<Vertex> {
+    const placement = shape.transforms;
+    if (!placement) {
+        return vertices;
+    }
+
+    const scale = Number.isFinite(placement.scale) ? placement.scale : 1;
+    const opacity = Number.isFinite(placement.opacity) ? placement.opacity : 1;
+    const [x, y] = placement.translate;
+    const translateX = Number.isFinite(x) ? x : 0;
+    const translateY = Number.isFinite(y) ? y : 0;
+    const degrees = (placement.rotate ?? 0) + (placement.rotateCenter ?? 0);
+    const radians = (Number.isFinite(degrees) ? degrees : 0) * Math.PI / 180;
+    const cosine = Math.cos(radians);
+    const sine = Math.sin(radians);
+
+    return vertices.map(vertex => {
+        const scaledX = vertex.position.x * scale;
+        const scaledY = vertex.position.y * scale;
+
+        return {
+            position: {
+                x: scaledX * cosine - scaledY * sine + translateX,
+                y: scaledX * sine + scaledY * cosine + translateY
+            },
+            color: { ...vertex.color, alpha: vertex.color.alpha * opacity }
+        };
+    });
+}
+
+/// What this shape draws itself, before anything nested inside it.
+function ownTriangles(shape: InertiaShape): Array<Vertex> {
     if (shape.vertices || !shape.shape) {
         return fan(shapeVertices(shape));
     }
@@ -849,9 +1245,74 @@ export function shapeTriangles(shape: InertiaShape): Array<Vertex> {
     return filled.concat(strokeTriangles(properties));
 }
 
+/// The length a child's coordinates are multiples of: the shorter side of this
+/// shape's own box, in whatever units this shape is itself measured in.
+///
+/// A described vector says its size outright. One authored corner by corner does
+/// not, so it is measured — the box its own corners occupy, which is the same
+/// thing the description would have named.
+///
+/// One length rather than two, for the reason the actionable's own unit is one
+/// length — see `shapeUnit`. Scaling a child by this box's width across and its
+/// height down would stretch it in whatever direction the parent happens to be
+/// longer in, so a circle nested in a wide rectangle came out an oval; measured
+/// against the shorter side it is the circle it was described as, wherever it is
+/// nested.
+function childUnit(shape: InertiaShape): number {
+    if (shape.shape && !shape.vertices) {
+        return Math.min(shape.shape.width, shape.shape.height);
+    }
+
+    const positions = shapeVertices(shape).map(vertex => vertex.position);
+    const first = positions[0];
+    if (!first) {
+        return 0;
+    }
+
+    let minX = first.x, maxX = first.x, minY = first.y, maxY = first.y;
+    positions.forEach(position => {
+        minX = Math.min(minX, position.x);
+        maxX = Math.max(maxX, position.x);
+        minY = Math.min(minY, position.y);
+        maxY = Math.max(maxY, position.y);
+    });
+
+    return Math.min(maxX - minX, maxY - minY);
+}
+
+function scaleVertices(vertices: Array<Vertex>, unit: number): Array<Vertex> {
+    return vertices.map(vertex => ({
+        position: { x: vertex.position.x * unit, y: vertex.position.y * unit },
+        color: vertex.color
+    }));
+}
+
+/// Every corner this shape's drawing reaches, its children's included, in the
+/// units this shape is measured in.
+///
+/// What the canvas is fitted to — see `shapeBounds`. A ring of corners alone
+/// would leave a child hanging over the edge of the canvas its parent sized, and
+/// cut it there.
+///
+/// Placed by `transforms`, the same as the triangles are: the canvas is fitted
+/// to where the drawing ends up, not to where it was drawn.
+export function enclosingShapeVertices(shape: InertiaShape): Array<Vertex> {
+    const children = shape.shapes ?? [];
+    if (children.length === 0) {
+        return placeVertices(shapeVertices(shape), shape);
+    }
+
+    const unit = childUnit(shape);
+    return placeVertices(
+        shapeVertices(shape)
+            .concat(children.flatMap(child => scaleVertices(enclosingShapeVertices(child), unit))),
+        shape
+    );
+}
+
 /// The smallest box holding every corner of these shapes, in the units they are
-/// authored in — multiples of the actionable's own frame, so `(0, 0, 1, 1)` is
-/// exactly the actionable and `(0, 0, 3, 3)` three times it.
+/// authored in — multiples of the actionable's shorter side, so a box 1 wide is
+/// as wide as that side and one 3 wide three times it.
 ///
 /// This is what the canvas is sized and placed by. Sizing it to the shapes
 /// rather than to the container is what keeps a shape whole: a canvas is a
@@ -864,7 +1325,7 @@ export function shapeTriangles(shape: InertiaShape): Array<Vertex> {
 /// Null when the shapes enclose no area, which is also when there is nothing to
 /// draw.
 export function shapeBounds(shapes: Array<InertiaShape>): InertiaRect | null {
-    const positions = shapes.flatMap(shape => shapeVertices(shape).map(vertex => vertex.position));
+    const positions = shapes.flatMap(shape => enclosingShapeVertices(shape).map(vertex => vertex.position));
     const first = positions[0];
     if (!first) {
         return null;
@@ -906,6 +1367,182 @@ export function normalizedShapeTriangles(shape: InertiaShape, bounds: InertiaRec
         },
         color: vertex.color
     }));
+}
+
+/// The shape a press at `point` lands on, wherever it is nested, or null for a
+/// press that misses every one of them.
+///
+/// `point` is in the units these shapes are authored in — multiples of the
+/// actionable's shorter side, measured from its middle, which is the same space
+/// `shapeBounds` answers in.
+///
+/// Front to back, so a press on two overlapping shapes picks the one drawn on
+/// top: the list is stacked and then read backwards, which is the drawing order
+/// reversed. What each shape is tested against is its drawing rather than its
+/// box — see `hitTestShape`.
+///
+/// Matches the Swift and Kotlin runtimes triangle for triangle, so a press that
+/// picks a shape on one runtime picks it on all three.
+export function hitTestShapes(shapes: Array<InertiaShape>, point: InertiaPoint): InertiaShape | null {
+    const stacked = stackedShapes(shapes);
+
+    for (let index = stacked.length - 1; index >= 0; index--) {
+        const hit = hitTestShape(stacked[index], point);
+        if (hit) {
+            return hit;
+        }
+    }
+
+    return null;
+}
+
+/// The shape a press at `point` lands on — this one, or the innermost shape
+/// nested inside it — or null for a press that misses everything here.
+///
+/// `point` is in the units this shape is measured in, which is the space its own
+/// `shapeTriangles` answer in: the parent's box, before this shape's placement
+/// has moved anything.
+///
+/// What is tested is the drawing rather than the box around it. A press in the
+/// corner of a circle's bounding box, or in the margin beside a triangle's
+/// slope, misses — so it falls through to whatever is behind instead of being
+/// swallowed by a backdrop the user cannot see there. An unfilled shape is its
+/// outline and nothing more, so a press through the middle of a ring misses it
+/// too.
+///
+/// Children first and back to front reversed, because that is the order they are
+/// drawn in and a press belongs to whatever is on top of the stack at that point
+/// — the same reading `shapeTriangles` lays down and this one inverts.
+export function hitTestShape(shape: InertiaShape, point: InertiaPoint): InertiaShape | null {
+    const local = unplacePoint(point, shape);
+    if (!local) {
+        return null;
+    }
+
+    const unit = childUnit(shape);
+    if (unit > 0) {
+        const children = stackedShapes(shape.shapes ?? []);
+
+        for (let index = children.length - 1; index >= 0; index--) {
+            const hit = hitTestShape(children[index], { x: local.x / unit, y: local.y / unit });
+            if (hit) {
+                return hit;
+            }
+        }
+    }
+
+    return hitsTriangles(local, ownTriangles(shape)) ? shape : null;
+}
+
+/// `point` carried back out of the shape's placement — the inverse of the trip
+/// `placeVertices` takes a corner on, so a press given in the parent's box lands
+/// in the space the shape's own corners were authored in.
+///
+/// Null for a shape scaled to nothing: it draws no area at all, so there is
+/// nothing for a press to land on and no scale to divide back out.
+function unplacePoint(point: InertiaPoint, shape: InertiaShape): InertiaPoint | null {
+    const placement = shape.transforms;
+    if (!placement) {
+        return point;
+    }
+
+    // The same falling back to the identity that `placeVertices` does, so a NaN
+    // out of a hand-edited file cannot make every press miss.
+    const scale = Number.isFinite(placement.scale) ? placement.scale : 1;
+    if (scale === 0) {
+        return null;
+    }
+
+    const [x, y] = placement.translate;
+    const translateX = Number.isFinite(x) ? x : 0;
+    const translateY = Number.isFinite(y) ? y : 0;
+    const degrees = (placement.rotate ?? 0) + (placement.rotateCenter ?? 0);
+
+    // Turned back rather than forward, and the move undone before the turn,
+    // because `placeVertices` moves last.
+    const radians = -(Number.isFinite(degrees) ? degrees : 0) * Math.PI / 180;
+    const cosine = Math.cos(radians);
+    const sine = Math.sin(radians);
+
+    const movedX = point.x - translateX;
+    const movedY = point.y - translateY;
+
+    return {
+        x: (movedX * cosine - movedY * sine) / scale,
+        y: (movedX * sine + movedY * cosine) / scale
+    };
+}
+
+/// Whether `point` falls on any of `triangles`, the list read three corners at a
+/// time — the way the renderer draws it, so what answers yes is exactly what was
+/// painted.
+///
+/// A trailing corner or two, which the renderer would not draw either, is left
+/// out rather than treated as a triangle of its own.
+function hitsTriangles(point: InertiaPoint, triangles: Array<Vertex>): boolean {
+    for (let index = 0; index + 2 < triangles.length; index += 3) {
+        if (containsPoint(
+            point,
+            triangles[index].position,
+            triangles[index + 1].position,
+            triangles[index + 2].position
+        )) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/// Whether `point` is inside the triangle `a`, `b`, `c`.
+///
+/// Which side of each edge the point falls on, by the sign of the cross product
+/// with that edge. Inside is the same side of all three; a zero is the point
+/// sitting on an edge, which counts as inside, so two triangles sharing an edge
+/// leave no seam for a press to fall through.
+///
+/// Winding is not assumed: the rings a shape resolves to are wound whichever way
+/// they were authored, and a fan of a clockwise ring is every bit as much a
+/// triangle as a fan of a counter-clockwise one.
+function containsPoint(point: InertiaPoint, a: InertiaPoint, b: InertiaPoint, c: InertiaPoint): boolean {
+    const side = (point: InertiaPoint, start: InertiaPoint, end: InertiaPoint) =>
+        (point.x - end.x) * (start.y - end.y) - (start.x - end.x) * (point.y - end.y);
+
+    const ab = side(point, a, b);
+    const bc = side(point, b, c);
+    const ca = side(point, c, a);
+
+    return !((ab < 0 || bc < 0 || ca < 0) && (ab > 0 || bc > 0 || ca > 0));
+}
+
+/// One canvas's artwork as SVG path data, in the canvas's own 0...1 space scaled
+/// to a box `width` by `height` CSS pixels.
+///
+/// What it is for: a `clip-path` on the element that listens for a press, so the
+/// browser only delivers one that landed on the drawing. A canvas is fitted to
+/// the box its shapes occupy together, and that box is mostly not shape — the
+/// corner beside a circle, the hole through an unfilled ring — and all of that
+/// has to go on reaching the app's own content underneath. The Swift runtime
+/// gets the same thing from `contentShape` and the Compose one by declining to
+/// consume the press.
+///
+/// The same triangles the renderer draws, read three corners at a time, wound as
+/// the shapes were authored: `clip-path` fills by the non-zero rule, so
+/// triangles overlapping — a stroke lying over the fill it encloses — add up
+/// rather than cancelling out.
+export function shapeClipPath(triangles: Array<Vertex>, width: number, height: number): string {
+    const parts: Array<string> = [];
+
+    for (let index = 0; index + 2 < triangles.length; index += 3) {
+        const corner = (offset: number) => {
+            const position = triangles[index + offset].position;
+            return `${(position.x * width).toFixed(3)} ${(position.y * height).toFixed(3)}`;
+        };
+
+        parts.push(`M${corner(0)}L${corner(1)}L${corner(2)}Z`);
+    }
+
+    return parts.join("");
 }
 
 /// How long this schema's own track runs, before any padding.
@@ -968,7 +1605,29 @@ export function valuesAtTime(
 ): InertiaAnimationValues {
     // A run that plays once is as long as its own track — padding it to the loop
     // would only hold it at the end, which is what the loop is for.
-    const track = isRepeating ? keyframesFilling(schema, loopDuration) : playableKeyframes(schema);
+    return valuesAt(schema, time, isRepeating ? loopDuration : null);
+}
+
+/// Where this animation has got to at `time`, seconds into the loop.
+///
+/// The one read behind playing, pausing and scrubbing alike — and behind every
+/// place a schema is drawn: the runtime's own actionables and the shapes they
+/// carry, and a canvas view, which draws the same schemas with none of the app
+/// around them. Sampling in one place is what keeps the canvas showing the
+/// frame the app is showing.
+///
+/// `filling` is the length the track is padded out to, so actionables of
+/// different lengths come round together. Null for a run that stops when its own
+/// keyframes do, which is what a non-repeating animation is.
+///
+/// Sanitized, so a NaN out of a hand-edited file can't reach an element's style
+/// and blank it out.
+export function valuesAt(
+    schema: InertiaAnimationSchema,
+    time: number,
+    filling: number | null
+): InertiaAnimationValues {
+    const track = filling === null ? playableKeyframes(schema) : keyframesFilling(schema, filling);
     let previous = sanitizeValues(schema.initialValues);
 
     if (track.length === 0) {
@@ -993,7 +1652,12 @@ export class WebSocketClient {
     private socket: WebSocket | null = null;
     public isConnected = false;
 
-    public messageReceived?: (selectedIds: Set<ActionableIdPair>) => void;
+    /// The editor's selection, with the id of the hierarchy it was made in.
+    ///
+    /// The tree id travels with it because a runtime can be drawing more than
+    /// one — a container per tab, say — and a selection only means anything
+    /// against the one it was picked in.
+    public messageReceived?: (treeId: string, selectedIds: Set<ActionableIdPair>) => void;
     public messageReceivedSchema?: (schemas: InertiaSchemaWrapper[]) => void;
     public messageReceivedIsActionable?: (isActionable: boolean) => void;
     public messageReceivedTranslationEnded?: (actionableIds: Set<ActionableIdPair>, translationX: number, translationY: number) => void;
@@ -1008,6 +1672,14 @@ export class WebSocketClient {
 
     private uri: string | null = null;
     private onConnect: (() => void) | null = null;
+    /// Everything that wants to know the moment an editor attaches, rather than
+    /// only at the one place that dials it.
+    ///
+    /// `onConnect` belongs to whoever called `connect` — the container — and is
+    /// replaced by the next caller. A node reporting its own measurement cannot
+    /// take that slot from it, and cannot wait for a layout that already
+    /// happened, so it listens here instead.
+    private connectedListeners = new Set<() => void>();
     private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     private isReconnecting = false;
 
@@ -1018,6 +1690,16 @@ export class WebSocketClient {
             WebSocketClient.instance = new WebSocketClient();
         }
         return WebSocketClient.instance;
+    }
+
+    /// Calls `listener` every time the socket comes up, and hands back the way
+    /// to stop listening — which a caller mounted and unmounted with a node has
+    /// to have.
+    public addConnectedListener(listener: () => void): () => void {
+        this.connectedListeners.add(listener);
+        return () => {
+            this.connectedListeners.delete(listener);
+        };
     }
 
     public connect(uri: string, onConnect: () => void): void {
@@ -1069,6 +1751,9 @@ export class WebSocketClient {
             this.isReconnecting = false;
             console.log("WebSocket connected");
             this.onConnect?.();
+            for (const listener of this.connectedListeners) {
+                listener();
+            }
         };
 
         socket.onmessage = (event: MessageEvent) => {
@@ -1172,6 +1857,10 @@ export class WebSocketClient {
         this.send(MessageType.selectedNodeProperties, message);
     }
 
+    public sendMessageNodeMeasured(message: MessageNodeMeasured): void {
+        this.send(MessageType.nodeMeasured, message);
+    }
+
     /// The playhead moves every frame, and a stall anywhere downstream would let
     /// sends pile up in the socket layer and then burst. At most one report is
     /// in flight at a time; anything produced while one is draining overwrites
@@ -1254,7 +1943,7 @@ export class WebSocketClient {
                 case MessageType.actionables:
                     const msg: MessageActionables = payload;
                     console.log("[INERTIA_LOG]: Received actionables:", msg);
-                    this.messageReceived?.(new Set(msg.actionableIds));
+                    this.messageReceived?.(msg.tree.id, new Set(msg.actionableIds));
                     break;
 
                 case MessageType.schema:
