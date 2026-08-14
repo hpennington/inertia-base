@@ -5,11 +5,26 @@ import { encode, decode } from "@msgpack/msgpack";
 /// wire alike — see `websocket-protocol.md`.
 export const inertiaFileExtension = "inertia";
 
+/// One state of an animation: where it starts, and the track it plays from
+/// there. An animation carries one of these per state the screen can be in.
+export interface InertiaAnimationStateMachine {
+    initialValues: InertiaAnimationValues;
+    keyframes: Array<InertiaAnimationKeyframe>;
+}
+
+/// The state an animation plays when nothing has asked for another one.
+///
+/// A schema always has at least this much: a project that never mentions states
+/// is one whose every animation was authored under this name, so a runtime that
+/// never calls `setState` plays exactly what it used to.
+export const defaultAnimationState = "default";
+
 export interface InertiaAnimationSchema {
     id: string;
-    initialValues: InertiaAnimationValues;
     invokeType: InertiaAnimationInvokeType;
-    keyframes: Array<InertiaAnimationKeyframe>;
+    /// What this animation does in each state of the screen it is on, keyed by
+    /// state name — see `stateMachine`.
+    states: Record<string, InertiaAnimationStateMachine>;
     /// What the actionable's canvas draws behind it. Optional to author, so an
     /// animation recorded before shapes existed — or one that simply wants none
     /// — still loads.
@@ -25,6 +40,50 @@ export interface InertiaAnimationSchema {
     /// Optional to author, so an animation recorded before the loop was part of
     /// the schema — or one happy with the default — still loads.
     loopDuration?: number;
+}
+
+/// The track `state` names, or the nearest thing this schema has to it.
+///
+/// Falling back rather than drawing nothing, because a state is asked for across
+/// a whole container while each animation carries only the states it was
+/// authored with: a screen switched to `expanded` still has to draw the
+/// actionables nobody authored an `expanded` for. Those hold their default, and
+/// — for a schema whose single state is called something else entirely — the one
+/// track it has, since a schema with one state has no ambiguity about which
+/// track is meant.
+export function stateMachine(
+    schema: InertiaAnimationSchema,
+    state?: string | null
+): InertiaAnimationStateMachine | null {
+    const states = schema.states ?? {};
+
+    if (state && states[state]) {
+        return states[state];
+    }
+
+    if (states[defaultAnimationState]) {
+        return states[defaultAnimationState];
+    }
+
+    const names = Object.keys(states);
+    return names.length === 1 ? states[names[0]] : null;
+}
+
+/// Where `state` starts this animation from — the identity transform when the
+/// schema has no track to answer with, which draws the node as laid out.
+export function initialValues(
+    schema: InertiaAnimationSchema,
+    state?: string | null
+): InertiaAnimationValues {
+    return stateMachine(schema, state)?.initialValues ?? identityValues;
+}
+
+/// The keyframes `state` was authored with.
+export function stateKeyframes(
+    schema: InertiaAnimationSchema,
+    state?: string | null
+): Array<InertiaAnimationKeyframe> {
+    return stateMachine(schema, state)?.keyframes ?? [];
 }
 
 /// The loop `schemas` were authored against, or null if none of them say.
@@ -824,7 +883,11 @@ export type AnimationSignal =
     | { type: "setLoopDuration"; duration: number }
     /// The editor's Trigger action on the named animation, standing in for the
     /// `trigger()` call the app would make.
-    | { type: "trigger"; id: string };
+    | { type: "trigger"; id: string }
+    /// The state the app — or the editor standing in for it — has put the
+    /// container into. Every animation in it draws that state's track from here
+    /// on. See `setState`.
+    | { type: "setState"; state: string };
 
 export type MessageSignal = {
     signal: AnimationSignal;
@@ -852,6 +915,11 @@ export function decodeAnimationSignal(raw: any): AnimationSignal | null {
     if ("trigger" in raw) {
         const id = raw.trigger?._0;
         return typeof id === "string" && id.length > 0 ? { type: "trigger", id } : null;
+    }
+
+    if ("setState" in raw) {
+        const state = raw.setState?._0;
+        return typeof state === "string" && state.length > 0 ? { type: "setState", state } : null;
     }
 
     return null;
@@ -884,10 +952,14 @@ export const InertiaPlayback = {
     /// works it out for the schemas it draws on its own. One answer for both, so
     /// a track padded in here and the same track padded over there are the same
     /// length and the two playheads mean the same thing.
-    duration(loop: number, schemas: Iterable<InertiaAnimationSchema>): number {
+    /// Measured against the state being played, since that is the track on
+    /// screen: stretching the loop to fit a state nothing is currently drawing
+    /// would leave every actionable holding its final frame through the
+    /// difference.
+    duration(loop: number, schemas: Iterable<InertiaAnimationSchema>, state?: string | null): number {
         let longestTrack = 0;
         for (const schema of schemas) {
-            longestTrack = Math.max(longestTrack, trackDuration(schema));
+            longestTrack = Math.max(longestTrack, trackDuration(schema, state));
         }
 
         return Math.max(loop, longestTrack);
@@ -924,8 +996,11 @@ export function sanitizeValues(values: InertiaAnimationValues | undefined): Iner
 /// The keyframes that can actually be interpolated. A zero-length keyframe —
 /// which the editor records for two keyframes captured at the same playhead
 /// position — would divide by zero when solving the segment.
-export function playableKeyframes(schema: InertiaAnimationSchema): Array<InertiaAnimationKeyframe> {
-    return (schema.keyframes ?? []).flatMap(keyframe => {
+export function playableKeyframes(
+    schema: InertiaAnimationSchema,
+    state?: string | null
+): Array<InertiaAnimationKeyframe> {
+    return stateKeyframes(schema, state).flatMap(keyframe => {
         if (!valuesAreFinite(keyframe.values)) {
             return [];
         }
@@ -1546,8 +1621,8 @@ export function shapeClipPath(triangles: Array<Vertex>, width: number, height: n
 }
 
 /// How long this schema's own track runs, before any padding.
-export function trackDuration(schema: InertiaAnimationSchema): number {
-    return playableKeyframes(schema).reduce((total, keyframe) => total + keyframe.duration, 0);
+export function trackDuration(schema: InertiaAnimationSchema, state?: string | null): number {
+    return playableKeyframes(schema, state).reduce((total, keyframe) => total + keyframe.duration, 0);
 }
 
 /// The playable track held at its final values until `duration` is up.
@@ -1555,8 +1630,12 @@ export function trackDuration(schema: InertiaAnimationSchema): number {
 /// Without this a track that ends after one second would restart three times
 /// while a three-second one runs once, and the playhead — which follows the
 /// loop rather than any one actionable — would agree with neither.
-export function keyframesFilling(schema: InertiaAnimationSchema, duration: number): Array<InertiaAnimationKeyframe> {
-    const track = playableKeyframes(schema);
+export function keyframesFilling(
+    schema: InertiaAnimationSchema,
+    duration: number,
+    state?: string | null
+): Array<InertiaAnimationKeyframe> {
+    const track = playableKeyframes(schema, state);
     const last = track[track.length - 1];
     if (!last) {
         return track;
@@ -1601,11 +1680,12 @@ export function valuesAtTime(
     schema: InertiaAnimationSchema,
     time: number,
     loopDuration: number,
-    isRepeating: boolean = true
+    isRepeating: boolean = true,
+    state?: string | null
 ): InertiaAnimationValues {
     // A run that plays once is as long as its own track — padding it to the loop
     // would only hold it at the end, which is what the loop is for.
-    return valuesAt(schema, time, isRepeating ? loopDuration : null);
+    return valuesAt(schema, time, isRepeating ? loopDuration : null, state);
 }
 
 /// Where this animation has got to at `time`, seconds into the loop.
@@ -1625,10 +1705,13 @@ export function valuesAtTime(
 export function valuesAt(
     schema: InertiaAnimationSchema,
     time: number,
-    filling: number | null
+    filling: number | null,
+    state?: string | null
 ): InertiaAnimationValues {
-    const track = filling === null ? playableKeyframes(schema) : keyframesFilling(schema, filling);
-    let previous = sanitizeValues(schema.initialValues);
+    const track = filling === null
+        ? playableKeyframes(schema, state)
+        : keyframesFilling(schema, filling, state);
+    let previous = sanitizeValues(initialValues(schema, state));
 
     if (track.length === 0) {
         return previous;
